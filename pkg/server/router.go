@@ -4,9 +4,9 @@ import (
 	"log/slog"
 	"net/http"
 
-	"a2a-proxy/pkg/config"
-	"a2a-proxy/pkg/dispatcher"
-	"a2a-proxy/pkg/metrics"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/config"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/dispatcher"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/metrics"
 )
 
 // RouterOption allows customizing router behavior.

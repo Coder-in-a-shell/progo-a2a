@@ -11,10 +11,10 @@ import (
 	"syscall"
 	"time"
 
-	"a2a-proxy/pkg/adapter"
-	"a2a-proxy/pkg/config"
-	"a2a-proxy/pkg/dispatcher"
-	"a2a-proxy/pkg/server"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/adapter"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/config"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/dispatcher"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/server"
 )
 
 func parseLogLevel(levelStr string) slog.Level {
@@ -31,7 +31,7 @@ func parseLogLevel(levelStr string) slog.Level {
 }
 
 func main() {
-	configPath := flag.String("config", "config/a2a-proxy.example.yaml", "Path to YAML configuration file")
+	configPath := flag.String("config", "config/progo-a2a.example.yaml", "Path to YAML configuration file")
 	host := flag.String("host", "", "Server host address override")
 	port := flag.Int("port", 0, "Server port override")
 	logLevel := flag.String("log-level", "info", "Log level (debug, info, warn, error)")

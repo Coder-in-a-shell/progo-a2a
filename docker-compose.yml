@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  progo-a2a:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: progo-a2a
+    ports:
+      - "8080:8080"
+    environment:
+      - LANGGRAPH_API_KEY=${LANGGRAPH_API_KEY:-dummy-key}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-dummy-key}
+      - SUPPORT_TOKEN=${SUPPORT_TOKEN:-dummy-token}
+    volumes:
+      - ./config/progo-a2a.example.yaml:/app/config/progo-a2a.yaml:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3

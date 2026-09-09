@@ -1,4 +1,4 @@
-module a2a-proxy
+module github.com/Coder-in-a-shell/progo-a2a
 
 go 1.26
 

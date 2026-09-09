@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"a2a-proxy/pkg/config"
-	"a2a-proxy/pkg/model"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/config"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/model"
 )
 
 func TestOpenAIAdapter(t *testing.T) {

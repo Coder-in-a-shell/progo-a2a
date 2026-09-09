@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"a2a-proxy/pkg/config"
-	"a2a-proxy/pkg/metrics"
-	"a2a-proxy/pkg/model"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/config"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/metrics"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/model"
 )
 
 type contextKey string

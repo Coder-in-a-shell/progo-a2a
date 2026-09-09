@@ -1,6 +1,6 @@
 package stream
 
-import "a2a-proxy/pkg/model"
+import "github.com/Coder-in-a-shell/progo-a2a/pkg/model"
 
 type Emitter interface {
 	Emit(eventType model.StreamEventType, data any) error

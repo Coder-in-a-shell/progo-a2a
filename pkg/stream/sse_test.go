@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"a2a-proxy/pkg/model"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/model"
 )
 
 func TestSSEHeadersAndInitialFlush(t *testing.T) {

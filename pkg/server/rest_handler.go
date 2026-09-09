@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"time"
 
-	"a2a-proxy/pkg/config"
-	"a2a-proxy/pkg/dispatcher"
-	"a2a-proxy/pkg/metrics"
-	"a2a-proxy/pkg/model"
-	"a2a-proxy/pkg/stream"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/config"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/dispatcher"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/metrics"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/model"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/stream"
 )
 
 // RESTHandler provides simplified REST endpoints for direct agent invocation and streaming.

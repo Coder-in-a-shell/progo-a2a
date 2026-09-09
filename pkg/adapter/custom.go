@@ -16,9 +16,9 @@ import (
 	"text/template"
 	"time"
 
-	"a2a-proxy/pkg/config"
-	"a2a-proxy/pkg/model"
-	"a2a-proxy/pkg/stream"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/config"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/model"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/stream"
 	"github.com/tidwall/gjson"
 )
 

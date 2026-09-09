@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"sync"
 
-	"a2a-proxy/pkg/model"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/model"
 )
 
 var _ Emitter = (*SSEResponseWriter)(nil)

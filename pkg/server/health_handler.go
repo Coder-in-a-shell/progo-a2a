@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"a2a-proxy/pkg/config"
-	"a2a-proxy/pkg/dispatcher"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/config"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/dispatcher"
 )
 
 // HealthHandler handles health check endpoints (/healthz and /readyz).

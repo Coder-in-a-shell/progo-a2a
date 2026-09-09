@@ -1,7 +1,7 @@
-.PHONY: build test bench clean run
+.PHONY: build test bench clean run docker-build
 
 build:
-	go build -o bin/a2a-proxy ./cmd/proxy
+	go build -o bin/progo-a2a ./cmd/proxy
 
 test:
 	go test -v -race ./...
@@ -13,4 +13,7 @@ clean:
 	rm -rf bin/
 
 run:
-	go run ./cmd/proxy -config config/a2a-proxy.example.yaml
+	go run ./cmd/proxy -config config/progo-a2a.example.yaml
+
+docker-build:
+	docker build -t progo-a2a:latest .
