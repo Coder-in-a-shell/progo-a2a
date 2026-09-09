@@ -2,8 +2,10 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,6 +14,7 @@ import (
 	"a2a-proxy/pkg/adapter"
 	"a2a-proxy/pkg/config"
 	"a2a-proxy/pkg/model"
+	"a2a-proxy/pkg/stream"
 )
 
 func TestCapabilityRouting(t *testing.T) {
@@ -562,4 +565,291 @@ func TestInvalidRequests(t *testing.T) {
 		t.Fatal("expected error for empty task, got nil")
 	}
 }
+
+type midStreamFailAdapter struct{}
+
+func (a *midStreamFailAdapter) Type() string { return "mid_stream_fail" }
+func (a *midStreamFailAdapter) TranslateRequest(ctx context.Context, agent *config.AgentConfig, task *model.TaskRequest) (*http.Request, error) {
+	return http.NewRequestWithContext(ctx, "POST", agent.Endpoint, nil)
+}
+func (a *midStreamFailAdapter) TranslateResponse(ctx context.Context, agent *config.AgentConfig, resp *http.Response) (*model.TaskResponse, error) {
+	return &model.TaskResponse{Output: "ok"}, nil
+}
+func (a *midStreamFailAdapter) TranslateStream(ctx context.Context, agent *config.AgentConfig, resp *http.Response, emitter stream.Emitter) error {
+	if err := emitter.Emit(model.EventTokenDelta, map[string]any{"delta": "partial chunk"}); err != nil {
+		return err
+	}
+	return errors.New("mid-stream connection dropped")
+}
+
+func TestDispatchStream_MidStreamFailure_NoFallback(t *testing.T) {
+	reg := adapter.NewRegistry()
+	reg.Register(&midStreamFailAdapter{})
+	reg.Register(adapter.NewCustomAdapter())
+
+	primaryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer primaryServer.Close()
+
+	var fallbackCalled atomic.Bool
+	fallbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackCalled.Store(true)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		if ok {
+			w.Write([]byte("data: {\"text\": \"fallback chunk\"}\n\n"))
+			flusher.Flush()
+			w.Write([]byte("data: [DONE]\n\n"))
+			flusher.Flush()
+		}
+	}))
+	defer fallbackServer.Close()
+
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{
+				ID:               "primary-agent",
+				Type:             "mid_stream_fail",
+				Endpoint:         primaryServer.URL,
+				Retries:          0,
+				FallbackAgentIDs: []string{"backup-agent"},
+			},
+			{
+				ID:       "backup-agent",
+				Type:     "custom",
+				Endpoint: fallbackServer.URL,
+				Mapping: &config.CustomMapping{
+					Request: config.RequestTemplate{Method: "POST", BodyTemplate: `{}`},
+					Stream: config.StreamMapping{
+						DataPath:     "text",
+						DoneSentinel: "[DONE]",
+					},
+				},
+			},
+		},
+	}
+
+	disp := New(cfg, reg)
+	task := &model.TaskRequest{AgentID: "primary-agent", Input: "test", Stream: true}
+	emitter := &recordingEmitter{}
+
+	err := disp.DispatchStream(context.Background(), task, emitter)
+	if err == nil {
+		t.Fatal("expected error on mid-stream failure, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "mid-stream connection dropped") {
+		t.Errorf("expected 'mid-stream connection dropped' error, got: %v", err)
+	}
+
+	if fallbackCalled.Load() {
+		t.Fatal("fallback agent was invoked after partial emission, expected NO fallback cascade")
+	}
+
+	events := emitter.Events()
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Type != model.EventTokenDelta {
+		t.Errorf("expected EventTokenDelta, got %s", events[0].Type)
+	}
+}
+
+func TestFallbackContextCancellation_Sync(t *testing.T) {
+	reg := adapter.NewRegistry()
+	reg.Register(adapter.NewCustomAdapter())
+
+	// Primary fails with 500
+	primaryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer primaryServer.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Fallback 1 cancels the parent context and returns 500
+	fb1Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cancel()
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer fb1Server.Close()
+
+	// Fallback 2 should never be reached
+	var fb2Called atomic.Bool
+	fb2Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fb2Called.Store(true)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"answer": "never reached"}`))
+	}))
+	defer fb2Server.Close()
+
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{
+				ID:               "agent-1",
+				Type:             "custom",
+				Endpoint:         primaryServer.URL,
+				Retries:          0,
+				FallbackAgentIDs: []string{"agent-2", "agent-3"},
+				Mapping: &config.CustomMapping{
+					Request: config.RequestTemplate{Method: "POST", BodyTemplate: `{}`},
+				},
+			},
+			{
+				ID:       "agent-2",
+				Type:     "custom",
+				Endpoint: fb1Server.URL,
+				Retries:  0,
+				Mapping: &config.CustomMapping{
+					Request: config.RequestTemplate{Method: "POST", BodyTemplate: `{}`},
+				},
+			},
+			{
+				ID:       "agent-3",
+				Type:     "custom",
+				Endpoint: fb2Server.URL,
+				Retries:  0,
+				Mapping: &config.CustomMapping{
+					Request:  config.RequestTemplate{Method: "POST", BodyTemplate: `{}`},
+					Response: config.ResponseMapping{OutputPath: "answer"},
+				},
+			},
+		},
+	}
+
+	disp := New(cfg, reg)
+	task := &model.TaskRequest{AgentID: "agent-1", Input: "test"}
+
+	_, err := disp.Dispatch(ctx, task)
+	if err == nil {
+		t.Fatal("expected error on canceled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled error, got: %v", err)
+	}
+	if fb2Called.Load() {
+		t.Fatal("fallback agent-3 was invoked after context cancellation in fallback loop")
+	}
+}
+
+func TestFallbackContextCancellation_Stream(t *testing.T) {
+	reg := adapter.NewRegistry()
+	reg.Register(adapter.NewCustomAdapter())
+
+	// Primary fails with 500
+	primaryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer primaryServer.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Fallback 1 cancels parent context and returns 500
+	fb1Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cancel()
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer fb1Server.Close()
+
+	// Fallback 2 should never be reached
+	var fb2Called atomic.Bool
+	fb2Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fb2Called.Store(true)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer fb2Server.Close()
+
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{
+				ID:               "agent-1",
+				Type:             "custom",
+				Endpoint:         primaryServer.URL,
+				Retries:          0,
+				FallbackAgentIDs: []string{"agent-2", "agent-3"},
+				Mapping: &config.CustomMapping{
+					Request: config.RequestTemplate{Method: "POST", BodyTemplate: `{}`},
+				},
+			},
+			{
+				ID:       "agent-2",
+				Type:     "custom",
+				Endpoint: fb1Server.URL,
+				Retries:  0,
+				Mapping: &config.CustomMapping{
+					Request: config.RequestTemplate{Method: "POST", BodyTemplate: `{}`},
+				},
+			},
+			{
+				ID:       "agent-3",
+				Type:     "custom",
+				Endpoint: fb2Server.URL,
+				Retries:  0,
+				Mapping: &config.CustomMapping{
+					Request: config.RequestTemplate{Method: "POST", BodyTemplate: `{}`},
+				},
+			},
+		},
+	}
+
+	disp := New(cfg, reg)
+	task := &model.TaskRequest{AgentID: "agent-1", Input: "test", Stream: true}
+	emitter := &recordingEmitter{}
+
+	err := disp.DispatchStream(ctx, task, emitter)
+	if err == nil {
+		t.Fatal("expected error on canceled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled error, got: %v", err)
+	}
+	if fb2Called.Load() {
+		t.Fatal("fallback agent-3 was invoked after context cancellation in streaming fallback loop")
+	}
+}
+
+func TestTransportPoolingConfiguration(t *testing.T) {
+	cfg := &config.Config{}
+	reg := adapter.NewRegistry()
+	disp := New(cfg, reg)
+
+	if disp.client == nil {
+		t.Fatal("expected http client, got nil")
+	}
+	transport, ok := disp.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", disp.client.Transport)
+	}
+	if transport.MaxIdleConns != 100 {
+		t.Errorf("expected MaxIdleConns=100, got %d", transport.MaxIdleConns)
+	}
+	if transport.MaxIdleConnsPerHost != 100 {
+		t.Errorf("expected MaxIdleConnsPerHost=100, got %d", transport.MaxIdleConnsPerHost)
+	}
+	if transport.IdleConnTimeout != 90*time.Second {
+		t.Errorf("expected IdleConnTimeout=90s, got %v", transport.IdleConnTimeout)
+	}
+}
+
+func TestBackoffPolicy_RandomizedJitter(t *testing.T) {
+	bp := &BackoffPolicy{
+		InitialInterval: 100 * time.Millisecond,
+		Multiplier:      2.0,
+		MaxInterval:     2 * time.Second,
+	}
+
+	for i := 0; i < 50; i++ {
+		dur := bp.Duration(0)
+		// 100ms * [0.8, 1.2] = [80ms, 120ms]
+		if dur < 80*time.Millisecond || dur > 120*time.Millisecond {
+			t.Fatalf("jittered duration %v out of expected range [80ms, 120ms]", dur)
+		}
+	}
+}
+
 

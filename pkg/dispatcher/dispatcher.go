@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -15,6 +16,16 @@ import (
 	"a2a-proxy/pkg/model"
 	"a2a-proxy/pkg/stream"
 )
+
+type trackingEmitter struct {
+	stream.Emitter
+	hasEmitted bool
+}
+
+func (t *trackingEmitter) Emit(eventType model.StreamEventType, data any) error {
+	t.hasEmitted = true
+	return t.Emitter.Emit(eventType, data)
+}
 
 // Dispatcher orchestrates routing, retries, and fallback failovers for agents.
 type Dispatcher struct {
@@ -26,10 +37,16 @@ type Dispatcher struct {
 
 // New creates a new Dispatcher with connection-pooled HTTP client and default exponential backoff.
 func New(cfg *config.Config, reg *adapter.Registry) *Dispatcher {
-	transport := &http.Transport{
-		MaxIdleConns:    100,
-		IdleConnTimeout: 90 * time.Second,
+	var transport *http.Transport
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = dt.Clone()
+	} else {
+		transport = &http.Transport{}
 	}
+	transport.MaxIdleConns = 100
+	transport.MaxIdleConnsPerHost = 100
+	transport.IdleConnTimeout = 90 * time.Second
+
 	return &Dispatcher{
 		cfg: cfg,
 		reg: reg,
@@ -156,6 +173,9 @@ func (d *Dispatcher) dispatchWithFallback(ctx context.Context, task *model.TaskR
 
 	// Cascade to fallback agents in order
 	for _, fallbackID := range agent.FallbackAgentIDs {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		if visited[fallbackID] {
 			continue
 		}
@@ -163,10 +183,18 @@ func (d *Dispatcher) dispatchWithFallback(ctx context.Context, task *model.TaskR
 		if getErr != nil {
 			continue
 		}
+		slog.Info("failing over to fallback agent",
+			"from_agent_id", agent.ID,
+			"to_agent_id", fallbackID,
+		)
 		fbResp, fbErr := d.dispatchWithFallback(ctx, task, fallbackAgent, visited)
 		if fbErr == nil {
 			return fbResp, nil
 		}
+	}
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 
 	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
@@ -202,6 +230,12 @@ func (d *Dispatcher) invokeAgentWithRetries(ctx context.Context, task *model.Tas
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
+			slog.Warn("retrying agent invocation",
+				"agent_id", agent.ID,
+				"attempt", attempt,
+				"max_retries", maxRetries,
+				"error", lastErr,
+			)
 			if sleepErr := d.backoff.Sleep(ctx, attempt-1); sleepErr != nil {
 				return nil, sleepErr
 			}
@@ -280,9 +314,18 @@ func (d *Dispatcher) dispatchStreamWithFallback(ctx context.Context, task *model
 	}
 	visited[agent.ID] = true
 
-	err := d.invokeAgentStreamWithRetries(ctx, task, agent, emitter)
+	tracker, ok := emitter.(*trackingEmitter)
+	if !ok {
+		tracker = &trackingEmitter{Emitter: emitter}
+	}
+
+	err := d.invokeAgentStreamWithRetries(ctx, task, agent, tracker)
 	if err == nil {
 		return nil
+	}
+
+	if tracker.hasEmitted {
+		return err
 	}
 
 	if ctx.Err() != nil {
@@ -291,6 +334,12 @@ func (d *Dispatcher) dispatchStreamWithFallback(ctx context.Context, task *model
 
 	// Cascade to fallback agents
 	for _, fallbackID := range agent.FallbackAgentIDs {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if tracker.hasEmitted {
+			return err
+		}
 		if visited[fallbackID] {
 			continue
 		}
@@ -298,10 +347,21 @@ func (d *Dispatcher) dispatchStreamWithFallback(ctx context.Context, task *model
 		if getErr != nil {
 			continue
 		}
-		fbErr := d.dispatchStreamWithFallback(ctx, task, fallbackAgent, emitter, visited)
+		slog.Info("failing over to streaming fallback agent",
+			"from_agent_id", agent.ID,
+			"to_agent_id", fallbackID,
+		)
+		fbErr := d.dispatchStreamWithFallback(ctx, task, fallbackAgent, tracker, visited)
 		if fbErr == nil {
 			return nil
 		}
+		if tracker.hasEmitted {
+			return fbErr
+		}
+	}
+
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 
 	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
@@ -337,6 +397,12 @@ func (d *Dispatcher) invokeAgentStreamWithRetries(ctx context.Context, task *mod
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
+			slog.Warn("retrying streaming agent invocation",
+				"agent_id", agent.ID,
+				"attempt", attempt,
+				"max_retries", maxRetries,
+				"error", lastErr,
+			)
 			if sleepErr := d.backoff.Sleep(ctx, attempt-1); sleepErr != nil {
 				return sleepErr
 			}

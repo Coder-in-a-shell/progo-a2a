@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"math"
+	"math/rand"
 	"time"
 )
 
@@ -23,7 +24,8 @@ func DefaultBackoffPolicy() *BackoffPolicy {
 	}
 }
 
-// Duration computes the backoff duration for the given retry attempt (0-indexed).
+// Duration computes the backoff duration for the given retry attempt (0-indexed)
+// with randomized jitter to prevent thundering herds.
 func (b *BackoffPolicy) Duration(attempt int) time.Duration {
 	if b == nil || b.InitialInterval <= 0 || attempt < 0 {
 		return 0
@@ -36,7 +38,8 @@ func (b *BackoffPolicy) Duration(attempt int) time.Duration {
 	if b.MaxInterval > 0 && d > float64(b.MaxInterval) {
 		d = float64(b.MaxInterval)
 	}
-	return time.Duration(d)
+	jitter := d * (0.8 + rand.Float64()*0.4)
+	return time.Duration(jitter)
 }
 
 // Sleep blocks until the duration for the given retry attempt elapses or ctx is cancelled.
