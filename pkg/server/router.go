@@ -42,6 +42,10 @@ func SetupRouter(cfg *config.Config, disp *dispatcher.Dispatcher, opts ...Router
 		opt(rc)
 	}
 
+	if disp != nil && rc.metricsRegistry != nil {
+		disp.SetMetricsRegistry(rc.metricsRegistry)
+	}
+
 	mux := http.NewServeMux()
 
 	a2aH := NewA2AHandler(cfg, disp, rc.metricsRegistry)

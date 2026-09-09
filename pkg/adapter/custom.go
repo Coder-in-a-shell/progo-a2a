@@ -144,6 +144,10 @@ func (a *CustomAdapter) TranslateRequest(ctx context.Context, agent *config.Agen
 		req.Header.Set(k, v)
 	}
 
+	if task.Stream {
+		req.Header.Set("Accept", "text/event-stream")
+	}
+
 	applyOutboundAuth(req, agent.Auth)
 	return req, nil
 }

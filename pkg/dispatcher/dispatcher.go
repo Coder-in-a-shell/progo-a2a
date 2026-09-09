@@ -13,6 +13,7 @@ import (
 
 	"a2a-proxy/pkg/adapter"
 	"a2a-proxy/pkg/config"
+	"a2a-proxy/pkg/metrics"
 	"a2a-proxy/pkg/model"
 	"a2a-proxy/pkg/stream"
 )
@@ -29,10 +30,11 @@ func (t *trackingEmitter) Emit(eventType model.StreamEventType, data any) error 
 
 // Dispatcher orchestrates routing, retries, and fallback failovers for agents.
 type Dispatcher struct {
-	cfg     *config.Config
-	reg     *adapter.Registry
-	client  *http.Client
-	backoff *BackoffPolicy
+	cfg             *config.Config
+	reg             *adapter.Registry
+	client          *http.Client
+	backoff         *BackoffPolicy
+	metricsRegistry *metrics.Registry
 }
 
 // New creates a new Dispatcher with connection-pooled HTTP client and default exponential backoff.
@@ -65,6 +67,11 @@ func (d *Dispatcher) SetHTTPClient(client *http.Client) {
 // SetBackoffPolicy overrides the internal retry backoff policy (e.g. for testing).
 func (d *Dispatcher) SetBackoffPolicy(b *BackoffPolicy) {
 	d.backoff = b
+}
+
+// SetMetricsRegistry configures the metrics registry for tracking retries and fallbacks.
+func (d *Dispatcher) SetMetricsRegistry(reg *metrics.Registry) {
+	d.metricsRegistry = reg
 }
 
 // Registry returns the adapter registry used by the dispatcher.
@@ -197,6 +204,9 @@ func (d *Dispatcher) dispatchWithFallback(ctx context.Context, task *model.TaskR
 			"from_agent_id", agent.ID,
 			"to_agent_id", fallbackID,
 		)
+		if d.metricsRegistry != nil {
+			d.metricsRegistry.IncFallbackTriggered(agent.ID, fallbackID)
+		}
 		fbResp, fbErr := d.dispatchWithFallback(ctx, task, fallbackAgent, visited)
 		if fbErr == nil {
 			return fbResp, nil
@@ -240,6 +250,9 @@ func (d *Dispatcher) invokeAgentWithRetries(ctx context.Context, task *model.Tas
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
+			if d.metricsRegistry != nil {
+				d.metricsRegistry.IncRetries(agent.ID)
+			}
 			slog.Warn("retrying agent invocation",
 				"agent_id", agent.ID,
 				"attempt", attempt,
@@ -361,6 +374,9 @@ func (d *Dispatcher) dispatchStreamWithFallback(ctx context.Context, task *model
 			"from_agent_id", agent.ID,
 			"to_agent_id", fallbackID,
 		)
+		if d.metricsRegistry != nil {
+			d.metricsRegistry.IncFallbackTriggered(agent.ID, fallbackID)
+		}
 		fbErr := d.dispatchStreamWithFallback(ctx, task, fallbackAgent, tracker, visited)
 		if fbErr == nil {
 			return nil
@@ -407,6 +423,9 @@ func (d *Dispatcher) invokeAgentStreamWithRetries(ctx context.Context, task *mod
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
+			if d.metricsRegistry != nil {
+				d.metricsRegistry.IncRetries(agent.ID)
+			}
 			slog.Warn("retrying streaming agent invocation",
 				"agent_id", agent.ID,
 				"attempt", attempt,
