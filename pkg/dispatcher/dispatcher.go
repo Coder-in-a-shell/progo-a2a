@@ -476,13 +476,11 @@ func (d *Dispatcher) invokeAgentStreamWithRetries(ctx context.Context, task *mod
 			continue
 		}
 
-		defer func() {
-			if cancel != nil {
-				cancel()
-			}
-		}()
-
-		return ad.TranslateStream(attemptCtx, agent, resp, emitter)
+		err = ad.TranslateStream(attemptCtx, agent, resp, emitter)
+		if cancel != nil {
+			cancel()
+		}
+		return err
 	}
 
 	return lastErr

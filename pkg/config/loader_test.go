@@ -296,4 +296,53 @@ func TestLoadReferenceExampleConfig(t *testing.T) {
 	}
 }
 
+func TestValidationSelfFallback(t *testing.T) {
+	cfg := &Config{
+		Server: ServerConfig{Port: 8080},
+		Agents: []AgentConfig{
+			{
+				ID:               "agent-self",
+				Type:             "openai",
+				Endpoint:         "http://localhost:8000",
+				FallbackAgentIDs: []string{"agent-self"},
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "cannot specify itself as fallback") {
+		t.Fatalf("expected self-fallback error, got: %v", err)
+	}
+}
+
+func TestValidationCyclicFallback(t *testing.T) {
+	cfg := &Config{
+		Server: ServerConfig{Port: 8080},
+		Agents: []AgentConfig{
+			{
+				ID:               "agent-1",
+				Type:             "openai",
+				Endpoint:         "http://localhost:8000",
+				FallbackAgentIDs: []string{"agent-2"},
+			},
+			{
+				ID:               "agent-2",
+				Type:             "crewai",
+				Endpoint:         "http://localhost:8001",
+				FallbackAgentIDs: []string{"agent-3"},
+			},
+			{
+				ID:               "agent-3",
+				Type:             "autogen",
+				Endpoint:         "http://localhost:8002",
+				FallbackAgentIDs: []string{"agent-1"},
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "cyclic fallback detected") {
+		t.Fatalf("expected cyclic fallback error, got: %v", err)
+	}
+}
+
+
 

@@ -30,14 +30,48 @@ func Validate(cfg *Config) error {
 		}
 	}
 
-	// Validate fallback agent references
+	// Validate fallback agent references and detect cycles statically
+	adj := make(map[string][]string)
 	for _, agent := range cfg.Agents {
 		for _, fbID := range agent.FallbackAgentIDs {
 			if !agentIDs[fbID] {
 				return fmt.Errorf("agent %s references non-existent fallback agent %s", agent.ID, fbID)
+			}
+			if fbID == agent.ID {
+				return fmt.Errorf("agent %s cannot specify itself as fallback", agent.ID)
+			}
+		}
+		adj[agent.ID] = agent.FallbackAgentIDs
+	}
+
+	// DFS cycle detection (0: unvisited, 1: visiting, 2: visited)
+	visitState := make(map[string]int)
+	var checkCycle func(node string, path []string) error
+	checkCycle = func(node string, path []string) error {
+		visitState[node] = 1
+		path = append(path, node)
+		for _, neighbor := range adj[node] {
+			if visitState[neighbor] == 1 {
+				return fmt.Errorf("cyclic fallback detected: %v -> %s", path, neighbor)
+			}
+			if visitState[neighbor] == 0 {
+				if err := checkCycle(neighbor, path); err != nil {
+					return err
+				}
+			}
+		}
+		visitState[node] = 2
+		return nil
+	}
+
+	for _, agent := range cfg.Agents {
+		if visitState[agent.ID] == 0 {
+			if err := checkCycle(agent.ID, nil); err != nil {
+				return err
 			}
 		}
 	}
 
 	return nil
 }
+
