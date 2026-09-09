@@ -26,12 +26,13 @@ func (b *benchmarkDiscardEmitter) Emit(eventType model.StreamEventType, data any
 }
 
 func BenchmarkSynchronousDispatch(b *testing.B) {
-	// Setup mock backends
-	lgSrv := mock.NewMockLangGraphServer()
+	// Setup mock backends with recording disabled to prevent unbounded memory growth during b.N iterations
+	mockCfg := mock.MockServerConfig{DisableRecording: true}
+	lgSrv := mock.NewMockLangGraphServer(mockCfg)
 	defer lgSrv.Close()
-	aiSrv := mock.NewMockOpenAIServer()
+	aiSrv := mock.NewMockOpenAIServer(mockCfg)
 	defer aiSrv.Close()
-	custSrv := mock.NewMockCustomServer()
+	custSrv := mock.NewMockCustomServerWithConfig(mockCfg)
 	defer custSrv.Close()
 
 	cfg := &config.Config{
@@ -140,9 +141,10 @@ func BenchmarkSynchronousDispatch(b *testing.B) {
 }
 
 func BenchmarkStreamingDispatch(b *testing.B) {
-	aiSrv := mock.NewMockOpenAIServer()
+	mockCfg := mock.MockServerConfig{DisableRecording: true}
+	aiSrv := mock.NewMockOpenAIServer(mockCfg)
 	defer aiSrv.Close()
-	custSrv := mock.NewMockCustomServer()
+	custSrv := mock.NewMockCustomServerWithConfig(mockCfg)
 	defer custSrv.Close()
 
 	cfg := &config.Config{

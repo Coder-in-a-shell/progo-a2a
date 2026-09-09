@@ -28,7 +28,8 @@ type testHarness struct {
 	openAIServer    *mock.MockOpenAIServer
 	customServer    *mock.MockCustomServer
 	fallbackServer  *mock.MockCustomServer
-	failingServer   *mock.TransientFailureServer
+	failingServer    *mock.TransientFailureServer
+	recoveringServer *mock.TransientFailureServer
 
 	cfg        *config.Config
 	metricsReg *metrics.Registry
@@ -72,6 +73,9 @@ func setupE2EHarness(t *testing.T) *testHarness {
 
 	// Transient failure server: fails 10 times with 500
 	failSrv := mock.NewTransientFailureServer(10)
+
+	// Transient recovering server: fails 1 time with 500 then succeeds on retry
+	recSrv := mock.NewTransientFailureServer(1)
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{
@@ -236,6 +240,19 @@ func setupE2EHarness(t *testing.T) *testHarness {
 					},
 				},
 			},
+			{
+				ID:             "agent-recovering",
+				Name:           "Transient Recovering Agent",
+				Type:           "custom",
+				Endpoint:       recSrv.URL,
+				Capabilities:   []string{"recovering"},
+				Retries:        2,
+				TimeoutSeconds: 5,
+				Mapping: &config.CustomMapping{
+					Request:  config.RequestTemplate{Method: "POST", BodyTemplate: `{}`},
+					Response: config.ResponseMapping{OutputPath: "output", StatusPath: "status"},
+				},
+			},
 		},
 	}
 
@@ -258,18 +275,19 @@ func setupE2EHarness(t *testing.T) *testHarness {
 	proxySrv := httptest.NewServer(router)
 
 	h := &testHarness{
-		langGraphServer: lgSrv,
-		crewAIServer:    crewSrv,
-		autoGenServer:   agSrv,
-		openAIServer:    aiSrv,
-		customServer:    custSrv,
-		fallbackServer:  fbSrv,
-		failingServer:   failSrv,
-		cfg:             cfg,
-		metricsReg:      metricsReg,
-		disp:            disp,
-		proxySrv:        proxySrv,
-		client:          &http.Client{Timeout: 10 * time.Second},
+		langGraphServer:  lgSrv,
+		crewAIServer:     crewSrv,
+		autoGenServer:    agSrv,
+		openAIServer:     aiSrv,
+		customServer:     custSrv,
+		fallbackServer:   fbSrv,
+		failingServer:    failSrv,
+		recoveringServer: recSrv,
+		cfg:              cfg,
+		metricsReg:       metricsReg,
+		disp:             disp,
+		proxySrv:         proxySrv,
+		client:           &http.Client{Timeout: 10 * time.Second},
 	}
 
 	t.Cleanup(func() {
@@ -281,6 +299,7 @@ func setupE2EHarness(t *testing.T) *testHarness {
 		custSrv.Close()
 		fbSrv.Close()
 		failSrv.Close()
+		recSrv.Close()
 	})
 
 	return h
@@ -938,23 +957,6 @@ func TestE2ERetryAndFallbackFailover(t *testing.T) {
 	}
 
 	// Case 3: Transient Retry Recovery
-	// Transient server that fails once then succeeds on retry
-	recoveringServer := mock.NewTransientFailureServer(1)
-	defer recoveringServer.Close()
-
-	recoveringAgent := config.AgentConfig{
-		ID:             "agent-recovering",
-		Type:           "custom",
-		Endpoint:       recoveringServer.URL,
-		Retries:        2,
-		TimeoutSeconds: 5,
-		Mapping: &config.CustomMapping{
-			Request:  config.RequestTemplate{Method: "POST", BodyTemplate: `{}`},
-			Response: config.ResponseMapping{OutputPath: "output", StatusPath: "status"},
-		},
-	}
-	h.cfg.Agents = append(h.cfg.Agents, recoveringAgent)
-
 	recReq := model.TaskRequest{
 		ID:      "task-retry-success",
 		AgentID: "agent-recovering",
@@ -972,8 +974,8 @@ func TestE2ERetryAndFallbackFailover(t *testing.T) {
 		t.Fatalf("expected 200 from recovering agent, got %d: %s", recResp.StatusCode, string(b))
 	}
 
-	if recoveringServer.Attempts() != 2 {
-		t.Errorf("expected 2 attempts before success on recovering server, got %d", recoveringServer.Attempts())
+	if h.recoveringServer.Attempts() != 2 {
+		t.Errorf("expected 2 attempts before success on recovering server, got %d", h.recoveringServer.Attempts())
 	}
 }
 
@@ -982,11 +984,24 @@ func TestE2EPrometheusMetricsVerification(t *testing.T) {
 	h := setupE2EHarness(t)
 
 	// Make 2 successful requests
-	_, _ = h.doRequest("POST", "/a2a/v1/tasks", model.TaskRequest{AgentID: "agent-openai", Input: "m1"}, "admin-key-secret")
-	_, _ = h.doRequest("POST", "/a2a/v1/tasks", model.TaskRequest{AgentID: "agent-crewai", Input: "m2"}, "admin-key-secret")
+	resp1, err := h.doRequest("POST", "/a2a/v1/tasks", model.TaskRequest{AgentID: "agent-openai", Input: "m1"}, "admin-key-secret")
+	if err != nil {
+		t.Fatalf("request 1 failed: %v", err)
+	}
+	resp1.Body.Close()
+
+	resp2, err := h.doRequest("POST", "/a2a/v1/tasks", model.TaskRequest{AgentID: "agent-crewai", Input: "m2"}, "admin-key-secret")
+	if err != nil {
+		t.Fatalf("request 2 failed: %v", err)
+	}
+	resp2.Body.Close()
 
 	// Trigger 1 fallback
-	_, _ = h.doRequest("POST", "/a2a/v1/tasks", model.TaskRequest{AgentID: "agent-failing", Input: "trigger fallback"}, "admin-key-secret")
+	resp3, err := h.doRequest("POST", "/a2a/v1/tasks", model.TaskRequest{AgentID: "agent-failing", Input: "trigger fallback"}, "admin-key-secret")
+	if err != nil {
+		t.Fatalf("request 3 failed: %v", err)
+	}
+	resp3.Body.Close()
 
 	// Fetch /metrics
 	metricsResp, err := h.doRequest("GET", "/metrics", nil, "")

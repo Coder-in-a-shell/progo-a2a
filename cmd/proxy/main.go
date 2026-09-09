@@ -68,7 +68,6 @@ func main() {
 		os.Exit(1)
 	}
 
-
 	// Initialize adapter registry and register all 5 adapters
 	reg := adapter.NewRegistry()
 	reg.Register(adapter.NewCustomAdapter())
