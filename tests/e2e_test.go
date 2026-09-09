@@ -22,12 +22,12 @@ import (
 )
 
 type testHarness struct {
-	langGraphServer *mock.MockLangGraphServer
-	crewAIServer    *mock.MockCrewAIServer
-	autoGenServer   *mock.MockAutoGenServer
-	openAIServer    *mock.MockOpenAIServer
-	customServer    *mock.MockCustomServer
-	fallbackServer  *mock.MockCustomServer
+	langGraphServer  *mock.MockLangGraphServer
+	crewAIServer     *mock.MockCrewAIServer
+	autoGenServer    *mock.MockAutoGenServer
+	openAIServer     *mock.MockOpenAIServer
+	customServer     *mock.MockCustomServer
+	fallbackServer   *mock.MockCustomServer
 	failingServer    *mock.TransientFailureServer
 	recoveringServer *mock.TransientFailureServer
 

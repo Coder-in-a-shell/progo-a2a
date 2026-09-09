@@ -7,7 +7,7 @@ Thank you for your interest in contributing to **ProGoA2A**! We welcome contribu
 ## Development Setup
 
 ### Prerequisites
-- **Go**: Version 1.22+ (Go 1.26+ recommended)
+- **Go**: Version 1.26.6 or newer (as declared in `go.mod`)
 - **Make**: For running build and test shortcuts
 - **Git**: For version control
 

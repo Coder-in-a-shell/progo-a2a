@@ -1,6 +1,6 @@
 module github.com/Coder-in-a-shell/progo-a2a
 
-go 1.26
+go 1.26.6
 
 require (
 	github.com/tidwall/gjson v1.19.0

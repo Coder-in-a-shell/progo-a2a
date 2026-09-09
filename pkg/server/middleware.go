@@ -174,7 +174,6 @@ func (rw *responseWriterWrapper) Unwrap() http.ResponseWriter {
 	return rw.ResponseWriter
 }
 
-
 // LoggingMiddleware logs request details using slog.Default().
 func LoggingMiddleware(next http.Handler) http.Handler {
 	return LoggingMiddlewareWithLogger(slog.Default())(next)

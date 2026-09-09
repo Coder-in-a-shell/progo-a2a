@@ -19,13 +19,13 @@ security:
   enabled: true
   api_keys:
     # Full access administrator key
-    - key: "admin-secret-key-12345"
+    - key: "${ADMIN_API_KEY}"
       client_id: "admin-client"
       allowed_agents:
         - "*"
 
     # Restricted client key with access to specific agents
-    - key: "analyst-secret-key-67890"
+    - key: "${ANALYST_API_KEY}"
       client_id: "analyst-client"
       allowed_agents:
         - "langgraph-researcher"

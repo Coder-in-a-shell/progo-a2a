@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 )
 
 func Validate(cfg *Config) error {
@@ -27,6 +28,27 @@ func Validate(cfg *Config) error {
 		}
 		if agent.Type == "custom" && agent.Mapping == nil {
 			return fmt.Errorf("agent %s is of type 'custom' but mapping is missing", agent.ID)
+		}
+	}
+
+	if cfg.Security.Enabled {
+		if len(cfg.Security.APIKeys) == 0 {
+			return fmt.Errorf("security is enabled but no API keys are configured")
+		}
+		seenKeys := make(map[string]bool, len(cfg.Security.APIKeys))
+		for i, apiKey := range cfg.Security.APIKeys {
+			if strings.TrimSpace(apiKey.Key) == "" {
+				return fmt.Errorf("security API key %d is empty", i)
+			}
+			if seenKeys[apiKey.Key] {
+				return fmt.Errorf("duplicate security API key at index %d", i)
+			}
+			seenKeys[apiKey.Key] = true
+			for _, allowedAgent := range apiKey.AllowedAgents {
+				if allowedAgent != "*" && !agentIDs[allowedAgent] {
+					return fmt.Errorf("security API key %d references non-existent allowed agent %s", i, allowedAgent)
+				}
+			}
 		}
 	}
 
@@ -74,4 +96,3 @@ func Validate(cfg *Config) error {
 
 	return nil
 }
-

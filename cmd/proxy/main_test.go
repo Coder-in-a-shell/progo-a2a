@@ -14,8 +14,6 @@ import (
 	"time"
 )
 
-
-
 func TestBinaryHelpFlag(t *testing.T) {
 	cmd := exec.Command("go", "run", "main.go", "-help")
 	out, _ := cmd.CombinedOutput()
@@ -160,7 +158,6 @@ func TestServerRunAndGracefulShutdown(t *testing.T) {
 		t.Errorf("expected 200 from agents endpoint, got %d", agentsResp.StatusCode)
 	}
 
-
 	// Send Interrupt signal to trigger graceful shutdown
 	if err := cmd.Process.Signal(os.Interrupt); err != nil {
 		t.Fatalf("failed to send SIGINT: %v", err)
@@ -187,5 +184,3 @@ func TestServerRunAndGracefulShutdown(t *testing.T) {
 		t.Errorf("expected graceful shutdown log message, got: %s", outStr)
 	}
 }
-
-

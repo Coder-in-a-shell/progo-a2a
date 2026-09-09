@@ -1053,4 +1053,3 @@ func TestAutoGenMidStreamError(t *testing.T) {
 		t.Fatal("expected EventTaskError to be emitted")
 	}
 }
-

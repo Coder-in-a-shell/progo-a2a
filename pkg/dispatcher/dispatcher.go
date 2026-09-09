@@ -291,8 +291,8 @@ func (d *Dispatcher) invokeAgentWithRetries(ctx context.Context, task *model.Tas
 		}
 
 		if resp.StatusCode >= 500 {
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
 			if cancel != nil {
 				cancel()
 			}
@@ -467,8 +467,8 @@ func (d *Dispatcher) invokeAgentStreamWithRetries(ctx context.Context, task *mod
 		}
 
 		if resp.StatusCode >= 500 {
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
 			if cancel != nil {
 				cancel()
 			}

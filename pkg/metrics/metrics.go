@@ -202,13 +202,13 @@ func (r *Registry) Gather() string {
 	// 1. a2a_active_streams
 	sb.WriteString("# HELP a2a_active_streams Current number of active streaming connections\n")
 	sb.WriteString("# TYPE a2a_active_streams gauge\n")
-	sb.WriteString(fmt.Sprintf("a2a_active_streams %d\n", atomic.LoadInt64(&r.activeStreams)))
+	_, _ = fmt.Fprintf(&sb, "a2a_active_streams %d\n", atomic.LoadInt64(&r.activeStreams))
 
 	// 2. a2a_fallback_triggered_total
 	sb.WriteString("# HELP a2a_fallback_triggered_total Total number of fallback agent invocations triggered\n")
 	sb.WriteString("# TYPE a2a_fallback_triggered_total counter\n")
 	if len(r.fallbacksTotal) == 0 {
-		sb.WriteString(fmt.Sprintf("a2a_fallback_triggered_total %d\n", r.totalFallbacks))
+		_, _ = fmt.Fprintf(&sb, "a2a_fallback_triggered_total %d\n", r.totalFallbacks)
 	} else {
 		type fbItem struct {
 			key   fallbackKey
@@ -225,8 +225,8 @@ func (r *Registry) Gather() string {
 			return items[i].key.FallbackAgent < items[j].key.FallbackAgent
 		})
 		for _, item := range items {
-			sb.WriteString(fmt.Sprintf("a2a_fallback_triggered_total{fallback=\"%s\",primary=\"%s\"} %d\n",
-				escapeLabel(item.key.FallbackAgent), escapeLabel(item.key.PrimaryAgent), item.count))
+			_, _ = fmt.Fprintf(&sb, "a2a_fallback_triggered_total{fallback=\"%s\",primary=\"%s\"} %d\n",
+				escapeLabel(item.key.FallbackAgent), escapeLabel(item.key.PrimaryAgent), item.count)
 		}
 	}
 
@@ -234,8 +234,8 @@ func (r *Registry) Gather() string {
 	sb.WriteString("# HELP a2a_request_duration_seconds HTTP request duration in seconds\n")
 	sb.WriteString("# TYPE a2a_request_duration_seconds summary\n")
 	if len(r.durationSum) == 0 {
-		sb.WriteString(fmt.Sprintf("a2a_request_duration_seconds_sum %.6f\n", r.totalDurSum))
-		sb.WriteString(fmt.Sprintf("a2a_request_duration_seconds_count %d\n", r.totalDurCount))
+		_, _ = fmt.Fprintf(&sb, "a2a_request_duration_seconds_sum %.6f\n", r.totalDurSum)
+		_, _ = fmt.Fprintf(&sb, "a2a_request_duration_seconds_count %d\n", r.totalDurCount)
 	} else {
 		type durItem struct {
 			key   durationKey
@@ -253,10 +253,10 @@ func (r *Registry) Gather() string {
 			return items[i].key.Path < items[j].key.Path
 		})
 		for _, item := range items {
-			sb.WriteString(fmt.Sprintf("a2a_request_duration_seconds_sum{method=\"%s\",path=\"%s\"} %.6f\n",
-				escapeLabel(item.key.Method), escapeLabel(item.key.Path), item.sum))
-			sb.WriteString(fmt.Sprintf("a2a_request_duration_seconds_count{method=\"%s\",path=\"%s\"} %d\n",
-				escapeLabel(item.key.Method), escapeLabel(item.key.Path), item.count))
+			_, _ = fmt.Fprintf(&sb, "a2a_request_duration_seconds_sum{method=\"%s\",path=\"%s\"} %.6f\n",
+				escapeLabel(item.key.Method), escapeLabel(item.key.Path), item.sum)
+			_, _ = fmt.Fprintf(&sb, "a2a_request_duration_seconds_count{method=\"%s\",path=\"%s\"} %d\n",
+				escapeLabel(item.key.Method), escapeLabel(item.key.Path), item.count)
 		}
 	}
 
@@ -264,7 +264,7 @@ func (r *Registry) Gather() string {
 	sb.WriteString("# HELP a2a_requests_total Total number of HTTP requests processed\n")
 	sb.WriteString("# TYPE a2a_requests_total counter\n")
 	if len(r.requestsTotal) == 0 {
-		sb.WriteString(fmt.Sprintf("a2a_requests_total %d\n", r.totalRequests))
+		_, _ = fmt.Fprintf(&sb, "a2a_requests_total %d\n", r.totalRequests)
 	} else {
 		type reqItem struct {
 			key   requestKey
@@ -284,8 +284,8 @@ func (r *Registry) Gather() string {
 			return items[i].key.Status < items[j].key.Status
 		})
 		for _, item := range items {
-			sb.WriteString(fmt.Sprintf("a2a_requests_total{method=\"%s\",path=\"%s\",status=\"%d\"} %d\n",
-				escapeLabel(item.key.Method), escapeLabel(item.key.Path), item.key.Status, item.count))
+			_, _ = fmt.Fprintf(&sb, "a2a_requests_total{method=\"%s\",path=\"%s\",status=\"%d\"} %d\n",
+				escapeLabel(item.key.Method), escapeLabel(item.key.Path), item.key.Status, item.count)
 		}
 	}
 
@@ -293,7 +293,7 @@ func (r *Registry) Gather() string {
 	sb.WriteString("# HELP a2a_retries_total Total number of downstream retries triggered\n")
 	sb.WriteString("# TYPE a2a_retries_total counter\n")
 	if len(r.retriesTotal) == 0 {
-		sb.WriteString(fmt.Sprintf("a2a_retries_total %d\n", r.totalRetries))
+		_, _ = fmt.Fprintf(&sb, "a2a_retries_total %d\n", r.totalRetries)
 	} else {
 		keys := make([]string, 0, len(r.retriesTotal))
 		for k := range r.retriesTotal {
@@ -301,7 +301,7 @@ func (r *Registry) Gather() string {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			sb.WriteString(fmt.Sprintf("a2a_retries_total{agent_id=\"%s\"} %d\n", escapeLabel(k), r.retriesTotal[k]))
+			_, _ = fmt.Fprintf(&sb, "a2a_retries_total{agent_id=\"%s\"} %d\n", escapeLabel(k), r.retriesTotal[k])
 		}
 	}
 

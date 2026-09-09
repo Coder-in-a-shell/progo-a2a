@@ -9,6 +9,8 @@ services:
     ports:
       - "8080:8080"
     environment:
+      - ADMIN_API_KEY=${ADMIN_API_KEY:-admin-local-key}
+      - ANALYST_API_KEY=${ANALYST_API_KEY:-analyst-local-key}
       - LANGGRAPH_API_KEY=${LANGGRAPH_API_KEY:-dummy-key}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-dummy-key}
       - SUPPORT_TOKEN=${SUPPORT_TOKEN:-dummy-token}

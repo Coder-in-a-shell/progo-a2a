@@ -785,4 +785,3 @@ func TestStreamActiveStreamsMetric(t *testing.T) {
 		t.Errorf("expected activeStreams=0 after streaming finished, got %d", current)
 	}
 }
-

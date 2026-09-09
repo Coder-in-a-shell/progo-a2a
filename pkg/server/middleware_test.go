@@ -575,4 +575,3 @@ func TestResponseWriterWrapper_Unwrap(t *testing.T) {
 		t.Fatal("expected non-nil ResponseController")
 	}
 }
-

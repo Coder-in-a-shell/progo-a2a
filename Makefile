@@ -13,7 +13,7 @@ clean:
 	rm -rf bin/
 
 run:
-	go run ./cmd/proxy -config config/progo-a2a.example.yaml
+	ADMIN_API_KEY=admin-local-key ANALYST_API_KEY=analyst-local-key go run ./cmd/proxy -config config/progo-a2a.example.yaml
 
 docker-build:
 	docker build -t progo-a2a:latest .

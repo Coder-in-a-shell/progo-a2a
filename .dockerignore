@@ -1,0 +1,9 @@
+.git
+.github
+.venv
+bin
+site
+docs
+*.md
+docker-compose.yml
+.gitignore

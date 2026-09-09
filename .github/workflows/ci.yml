@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify modules
+        run: go mod verify
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Test with race detector
+        run: go test -count=1 -race ./...
+      - name: Build
+        run: go build ./...
+
+  docs:
+    name: Documentation checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install documentation dependencies
+        run: pip install -r requirements-docs.txt
+      - name: Build documentation
+        run: mkdocs build --strict

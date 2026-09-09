@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
@@ -49,7 +48,6 @@ func (h *RESTHandler) getMetrics() *metrics.Registry {
 	return metrics.DefaultRegistry
 }
 
-
 // InvokeAgent handles POST /api/v1/invoke/{agent_id}.
 func (h *RESTHandler) InvokeAgent(w http.ResponseWriter, r *http.Request) {
 	agentID := r.PathValue("agent_id")
@@ -79,6 +77,10 @@ func (h *RESTHandler) InvokeAgent(w http.ResponseWriter, r *http.Request) {
 	// Parse body into task input
 	task, err := h.buildTaskFromBody(r, agentID)
 	if err != nil {
+		if errors.Is(err, errRequestBodyTooLarge) {
+			writeA2AError(w, "REQUEST_TOO_LARGE", err.Error(), agentID, http.StatusRequestEntityTooLarge)
+			return
+		}
 		writeA2AError(w, "INVALID_REQUEST", err.Error(), agentID, http.StatusBadRequest)
 		return
 	}
@@ -132,6 +134,10 @@ func (h *RESTHandler) StreamAgent(w http.ResponseWriter, r *http.Request) {
 	// Parse body into task input
 	task, err := h.buildTaskFromBody(r, agentID)
 	if err != nil {
+		if errors.Is(err, errRequestBodyTooLarge) {
+			writeA2AError(w, "REQUEST_TOO_LARGE", err.Error(), agentID, http.StatusRequestEntityTooLarge)
+			return
+		}
 		writeA2AError(w, "INVALID_REQUEST", err.Error(), agentID, http.StatusBadRequest)
 		return
 	}
@@ -150,16 +156,16 @@ func (h *RESTHandler) StreamAgent(w http.ResponseWriter, r *http.Request) {
 	h.getMetrics().IncActiveStreams()
 	defer h.getMetrics().DecActiveStreams()
 
-	if err := h.disp.DispatchStream(r.Context(), task, sseWriter); err != nil {
-		_ = sseWriter.Emit(model.EventTaskError, map[string]string{
+	trackedEmitter := &errorTrackingEmitter{Emitter: sseWriter}
+	if err := h.disp.DispatchStream(r.Context(), task, trackedEmitter); err != nil && !trackedEmitter.errorEmitted.Load() {
+		_ = trackedEmitter.Emit(model.EventTaskError, map[string]string{
 			"error": err.Error(),
 		})
 	}
 }
 
 func (h *RESTHandler) buildTaskFromBody(r *http.Request, agentID string) (*model.TaskRequest, error) {
-	limitedBody := io.LimitReader(r.Body, 10*1024*1024)
-	bodyBytes, err := io.ReadAll(limitedBody)
+	bodyBytes, err := readRequestBody(r.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read body: %w", err)
 	}

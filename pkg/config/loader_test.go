@@ -187,6 +187,34 @@ func TestValidationErrors(t *testing.T) {
 			},
 			errContains: "references non-existent fallback agent non-existent-agent",
 		},
+		{
+			name: "security enabled without keys",
+			cfg: Config{
+				Server:   ServerConfig{Port: 8080},
+				Security: SecurityConfig{Enabled: true},
+			},
+			errContains: "security is enabled but no API keys are configured",
+		},
+		{
+			name: "empty security key",
+			cfg: Config{
+				Server: ServerConfig{Port: 8080},
+				Security: SecurityConfig{Enabled: true, APIKeys: []APIKeyConfig{
+					{Key: "", ClientID: "client", AllowedAgents: []string{"*"}},
+				}},
+			},
+			errContains: "security API key 0 is empty",
+		},
+		{
+			name: "security key references unknown agent",
+			cfg: Config{
+				Server: ServerConfig{Port: 8080},
+				Security: SecurityConfig{Enabled: true, APIKeys: []APIKeyConfig{
+					{Key: "secret", ClientID: "client", AllowedAgents: []string{"missing"}},
+				}},
+			},
+			errContains: "references non-existent allowed agent missing",
+		},
 	}
 
 	for _, tc := range tests {
@@ -207,9 +235,9 @@ func TestValidationSuccessWithFallbackAndCustom(t *testing.T) {
 		Server: ServerConfig{Port: 8080},
 		Agents: []AgentConfig{
 			{
-				ID:       "primary",
-				Type:     "openai",
-				Endpoint: "http://localhost:8000",
+				ID:               "primary",
+				Type:             "openai",
+				Endpoint:         "http://localhost:8000",
 				FallbackAgentIDs: []string{"secondary"},
 			},
 			{
@@ -343,6 +371,3 @@ func TestValidationCyclicFallback(t *testing.T) {
 		t.Fatalf("expected cyclic fallback error, got: %v", err)
 	}
 }
-
-
-

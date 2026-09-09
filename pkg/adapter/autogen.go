@@ -99,7 +99,7 @@ func (a *AutoGenAdapter) TranslateResponse(ctx context.Context, agent *config.Ag
 	if resp == nil || resp.Body == nil {
 		return nil, fmt.Errorf("response or response body is nil")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -163,12 +163,12 @@ func (a *AutoGenAdapter) TranslateStream(ctx context.Context, agent *config.Agen
 	if resp == nil || resp.Body == nil {
 		return fmt.Errorf("response or response body is nil")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
 		errMsg := fmt.Sprintf("upstream returned status %d: %s", resp.StatusCode, string(body))
-		emitter.Emit(model.EventTaskError, map[string]any{"error": errMsg, "agent_id": agent.ID})
+		_ = emitter.Emit(model.EventTaskError, map[string]any{"error": errMsg, "agent_id": agent.ID})
 		return fmt.Errorf("upstream returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -206,7 +206,7 @@ func (a *AutoGenAdapter) TranslateStream(ctx context.Context, agent *config.Agen
 					if errMsg == "" {
 						errMsg = "unknown stream error"
 					}
-					emitter.Emit(model.EventTaskError, map[string]any{"error": errMsg, "agent_id": agent.ID})
+					_ = emitter.Emit(model.EventTaskError, map[string]any{"error": errMsg, "agent_id": agent.ID})
 					return fmt.Errorf("upstream stream error: %s", errMsg)
 				}
 

@@ -1,5 +1,5 @@
 # Build Stage
-FROM golang:alpine AS builder
+FROM golang:1.26.6-alpine AS builder
 
 WORKDIR /app
 
@@ -17,14 +17,18 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/progo-a2a ./cmd/proxy
 
 # Runtime Stage
-FROM alpine:latest
+FROM alpine:3.22
 
-RUN apk --no-cache add ca-certificates tzdata
+RUN apk --no-cache add ca-certificates tzdata \
+    && addgroup -S progo-a2a \
+    && adduser -S -G progo-a2a progo-a2a
 
 WORKDIR /app
 
-COPY --from=builder /bin/progo-a2a /app/progo-a2a
-COPY config/progo-a2a.example.yaml /app/config/progo-a2a.yaml
+COPY --from=builder --chown=progo-a2a:progo-a2a /bin/progo-a2a /app/progo-a2a
+COPY --chown=progo-a2a:progo-a2a config/progo-a2a.example.yaml /app/config/progo-a2a.yaml
+
+USER progo-a2a
 
 EXPOSE 8080
 

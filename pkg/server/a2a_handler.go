@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -127,13 +126,15 @@ func (h *A2AHandler) StoreTask(resp *model.TaskResponse) {
 	}
 }
 
-
 // ListAgents handles GET /a2a/v1/agents, returning all configured agents as model.AgentListResponse.
 func (h *A2AHandler) ListAgents(w http.ResponseWriter, r *http.Request) {
 	var cards []model.AgentCard
 	if h.cfg != nil {
 		cards = make([]model.AgentCard, 0, len(h.cfg.Agents))
 		for _, a := range h.cfg.Agents {
+			if creds, ok := GetClientCredentials(r.Context()); ok && !creds.Allows(a.ID) {
+				continue
+			}
 			cards = append(cards, model.AgentCard{
 				ID:           a.ID,
 				Name:         a.Name,
@@ -185,8 +186,16 @@ func (h *A2AHandler) GetAgent(w http.ResponseWriter, r *http.Request) {
 // DispatchTask handles POST /a2a/v1/tasks.
 func (h *A2AHandler) DispatchTask(w http.ResponseWriter, r *http.Request) {
 	var task model.TaskRequest
-	limitedBody := io.LimitReader(r.Body, 10*1024*1024)
-	if err := json.NewDecoder(limitedBody).Decode(&task); err != nil {
+	body, err := readRequestBody(r.Body)
+	if errors.Is(err, errRequestBodyTooLarge) {
+		writeA2AError(w, "REQUEST_TOO_LARGE", err.Error(), "", http.StatusRequestEntityTooLarge)
+		return
+	}
+	if err != nil {
+		writeA2AError(w, "INVALID_REQUEST", "Failed to read request body: "+err.Error(), "", http.StatusBadRequest)
+		return
+	}
+	if err := json.Unmarshal(body, &task); err != nil {
 		writeA2AError(w, "INVALID_REQUEST", "Failed to parse JSON body: "+err.Error(), "", http.StatusBadRequest)
 		return
 	}
@@ -242,8 +251,16 @@ func (h *A2AHandler) DispatchTask(w http.ResponseWriter, r *http.Request) {
 // DispatchTaskStream handles POST /a2a/v1/tasks/stream.
 func (h *A2AHandler) DispatchTaskStream(w http.ResponseWriter, r *http.Request) {
 	var task model.TaskRequest
-	limitedBody := io.LimitReader(r.Body, 10*1024*1024)
-	if err := json.NewDecoder(limitedBody).Decode(&task); err != nil {
+	body, err := readRequestBody(r.Body)
+	if errors.Is(err, errRequestBodyTooLarge) {
+		writeA2AError(w, "REQUEST_TOO_LARGE", err.Error(), "", http.StatusRequestEntityTooLarge)
+		return
+	}
+	if err != nil {
+		writeA2AError(w, "INVALID_REQUEST", "Failed to read request body: "+err.Error(), "", http.StatusBadRequest)
+		return
+	}
+	if err := json.Unmarshal(body, &task); err != nil {
 		writeA2AError(w, "INVALID_REQUEST", "Failed to parse JSON body: "+err.Error(), "", http.StatusBadRequest)
 		return
 	}
@@ -289,13 +306,13 @@ func (h *A2AHandler) DispatchTaskStream(w http.ResponseWriter, r *http.Request) 
 	defer h.getMetrics().DecActiveStreams()
 
 	task.Stream = true
-	if err := h.disp.DispatchStream(r.Context(), &task, sseWriter); err != nil {
-		_ = sseWriter.Emit(model.EventTaskError, map[string]string{
+	trackedEmitter := &errorTrackingEmitter{Emitter: sseWriter}
+	if err := h.disp.DispatchStream(r.Context(), &task, trackedEmitter); err != nil && !trackedEmitter.errorEmitted.Load() {
+		_ = trackedEmitter.Emit(model.EventTaskError, map[string]string{
 			"error": err.Error(),
 		})
 	}
 }
-
 
 // GetTask handles GET /a2a/v1/tasks/{task_id}.
 func (h *A2AHandler) GetTask(w http.ResponseWriter, r *http.Request) {
@@ -310,6 +327,10 @@ func (h *A2AHandler) GetTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if val, ok := h.tasks.Load(taskID); ok {
+		if creds, authenticated := GetClientCredentials(r.Context()); authenticated && !creds.Allows(val.AgentID) {
+			writeA2AError(w, "FORBIDDEN", fmt.Sprintf("Access to agent '%s' is forbidden", val.AgentID), val.AgentID, http.StatusForbidden)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(val)
