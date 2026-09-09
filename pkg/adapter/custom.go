@@ -101,6 +101,9 @@ func templateFuncs() template.FuncMap {
 }
 
 func (a *CustomAdapter) TranslateRequest(ctx context.Context, agent *config.AgentConfig, task *model.TaskRequest) (*http.Request, error) {
+	if agent == nil || task == nil {
+		return nil, fmt.Errorf("agent and task must not be nil")
+	}
 	if agent.Mapping == nil {
 		return nil, fmt.Errorf("custom agent %s missing mapping config", agent.ID)
 	}
@@ -146,6 +149,9 @@ func (a *CustomAdapter) TranslateRequest(ctx context.Context, agent *config.Agen
 }
 
 func (a *CustomAdapter) TranslateResponse(ctx context.Context, agent *config.AgentConfig, resp *http.Response) (*model.TaskResponse, error) {
+	if agent == nil {
+		return nil, fmt.Errorf("agent must not be nil")
+	}
 	if resp == nil || resp.Body == nil {
 		return nil, fmt.Errorf("response or response body is nil")
 	}
@@ -241,6 +247,12 @@ func (a *CustomAdapter) TranslateResponse(ctx context.Context, agent *config.Age
 }
 
 func (a *CustomAdapter) TranslateStream(ctx context.Context, agent *config.AgentConfig, resp *http.Response, emitter stream.Emitter) error {
+	if agent == nil {
+		return fmt.Errorf("agent must not be nil")
+	}
+	if emitter == nil {
+		return fmt.Errorf("emitter must not be nil")
+	}
 	if resp == nil || resp.Body == nil {
 		return fmt.Errorf("response or response body is nil")
 	}

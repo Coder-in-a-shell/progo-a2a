@@ -59,6 +59,17 @@ func (a *LangGraphAdapter) TranslateRequest(ctx context.Context, agent *config.A
 		}
 		if optCfg, ok := agent.Options["config"].(map[string]any); ok {
 			for k, v := range optCfg {
+				if k == "configurable" {
+					if optConf, isMap := v.(map[string]any); isMap {
+						for ck, cv := range optConf {
+							if ck == "thread_id" && threadID != "" {
+								continue
+							}
+							configurable[ck] = cv
+						}
+						continue
+					}
+				}
 				configMap[k] = v
 			}
 		}
@@ -87,6 +98,9 @@ func (a *LangGraphAdapter) TranslateRequest(ctx context.Context, agent *config.A
 }
 
 func (a *LangGraphAdapter) TranslateResponse(ctx context.Context, agent *config.AgentConfig, resp *http.Response) (*model.TaskResponse, error) {
+	if agent == nil {
+		return nil, fmt.Errorf("agent must not be nil")
+	}
 	if resp == nil || resp.Body == nil {
 		return nil, fmt.Errorf("response or response body is nil")
 	}
@@ -135,6 +149,12 @@ func (a *LangGraphAdapter) TranslateResponse(ctx context.Context, agent *config.
 }
 
 func (a *LangGraphAdapter) TranslateStream(ctx context.Context, agent *config.AgentConfig, resp *http.Response, emitter stream.Emitter) error {
+	if agent == nil {
+		return fmt.Errorf("agent must not be nil")
+	}
+	if emitter == nil {
+		return fmt.Errorf("emitter must not be nil")
+	}
 	if resp == nil || resp.Body == nil {
 		return fmt.Errorf("response or response body is nil")
 	}
@@ -180,6 +200,20 @@ func (a *LangGraphAdapter) TranslateStream(ctx context.Context, agent *config.Ag
 			}
 
 			switch currentEvent {
+			case "error":
+				errMsg := data
+				if gjson.Valid(data) {
+					if gjson.Get(data, "message").Exists() {
+						errMsg = gjson.Get(data, "message").String()
+					} else if gjson.Get(data, "error").Exists() {
+						errMsg = gjson.Get(data, "error").String()
+					}
+				}
+				if errMsg == "" {
+					errMsg = "unknown stream error"
+				}
+				emitter.Emit(model.EventTaskError, map[string]any{"error": errMsg, "agent_id": agent.ID})
+				return fmt.Errorf("upstream stream error: %s", errMsg)
 			case "messages", "message", "token":
 				var delta any = data
 				if gjson.Valid(data) {

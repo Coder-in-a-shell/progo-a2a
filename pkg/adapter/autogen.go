@@ -93,6 +93,9 @@ func (a *AutoGenAdapter) TranslateRequest(ctx context.Context, agent *config.Age
 }
 
 func (a *AutoGenAdapter) TranslateResponse(ctx context.Context, agent *config.AgentConfig, resp *http.Response) (*model.TaskResponse, error) {
+	if agent == nil {
+		return nil, fmt.Errorf("agent must not be nil")
+	}
 	if resp == nil || resp.Body == nil {
 		return nil, fmt.Errorf("response or response body is nil")
 	}
@@ -130,15 +133,13 @@ func (a *AutoGenAdapter) TranslateResponse(ctx context.Context, agent *config.Ag
 		taskResp.Output = gjson.Get(bodyStr, "summary").Value()
 	} else if gjson.Get(bodyStr, "message").Exists() {
 		taskResp.Output = gjson.Get(bodyStr, "message").Value()
-	} else if gjson.Get(bodyStr, "chat_history").Exists() && gjson.Get(bodyStr, "chat_history").IsArray() {
-		arr := gjson.Get(bodyStr, "chat_history").Array()
-		if len(arr) > 0 {
-			last := arr[len(arr)-1]
-			if last.Get("content").Exists() {
-				taskResp.Output = last.Get("content").Value()
-			} else {
-				taskResp.Output = last.Value()
-			}
+	} else if hist := gjson.Get(bodyStr, "chat_history"); hist.Exists() && hist.IsArray() && len(hist.Array()) > 0 {
+		arr := hist.Array()
+		last := arr[len(arr)-1]
+		if last.Get("content").Exists() {
+			taskResp.Output = last.Get("content").Value()
+		} else {
+			taskResp.Output = last.Value()
 		}
 	} else {
 		var parsed any
@@ -153,6 +154,12 @@ func (a *AutoGenAdapter) TranslateResponse(ctx context.Context, agent *config.Ag
 }
 
 func (a *AutoGenAdapter) TranslateStream(ctx context.Context, agent *config.AgentConfig, resp *http.Response, emitter stream.Emitter) error {
+	if agent == nil {
+		return fmt.Errorf("agent must not be nil")
+	}
+	if emitter == nil {
+		return fmt.Errorf("emitter must not be nil")
+	}
 	if resp == nil || resp.Body == nil {
 		return fmt.Errorf("response or response body is nil")
 	}
@@ -191,6 +198,18 @@ func (a *AutoGenAdapter) TranslateStream(ctx context.Context, agent *config.Agen
 			}
 
 			if gjson.Valid(data) {
+				if errVal := gjson.Get(data, "error"); errVal.Exists() {
+					errMsg := errVal.String()
+					if msg := errVal.Get("message"); msg.Exists() && msg.String() != "" {
+						errMsg = msg.String()
+					}
+					if errMsg == "" {
+						errMsg = "unknown stream error"
+					}
+					emitter.Emit(model.EventTaskError, map[string]any{"error": errMsg, "agent_id": agent.ID})
+					return fmt.Errorf("upstream stream error: %s", errMsg)
+				}
+
 				if gjson.Get(data, "step").Exists() {
 					if err := emitter.Emit(model.EventStepProgress, map[string]any{"step": "step", "data": gjson.Parse(data).Value()}); err != nil {
 						return err

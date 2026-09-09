@@ -71,6 +71,9 @@ func (a *CrewAIAdapter) TranslateRequest(ctx context.Context, agent *config.Agen
 }
 
 func (a *CrewAIAdapter) TranslateResponse(ctx context.Context, agent *config.AgentConfig, resp *http.Response) (*model.TaskResponse, error) {
+	if agent == nil {
+		return nil, fmt.Errorf("agent must not be nil")
+	}
 	if resp == nil || resp.Body == nil {
 		return nil, fmt.Errorf("response or response body is nil")
 	}
@@ -121,6 +124,19 @@ func (a *CrewAIAdapter) TranslateResponse(ctx context.Context, agent *config.Age
 		s := strings.ToLower(gjson.Get(bodyStr, "status").String())
 		if s == "failed" || s == "error" {
 			taskResp.Status = model.StatusFailed
+			if taskResp.Error == nil {
+				var errStr string
+				if gjson.Get(bodyStr, "error.message").Exists() {
+					errStr = gjson.Get(bodyStr, "error.message").String()
+				} else if gjson.Get(bodyStr, "error").Exists() {
+					errStr = gjson.Get(bodyStr, "error").String()
+				} else if gjson.Get(bodyStr, "message").Exists() {
+					errStr = gjson.Get(bodyStr, "message").String()
+				} else {
+					errStr = fmt.Sprintf("crewai execution status: %s", s)
+				}
+				taskResp.Error = &errStr
+			}
 		}
 	}
 
@@ -128,6 +144,12 @@ func (a *CrewAIAdapter) TranslateResponse(ctx context.Context, agent *config.Age
 }
 
 func (a *CrewAIAdapter) TranslateStream(ctx context.Context, agent *config.AgentConfig, resp *http.Response, emitter stream.Emitter) error {
+	if agent == nil {
+		return fmt.Errorf("agent must not be nil")
+	}
+	if emitter == nil {
+		return fmt.Errorf("emitter must not be nil")
+	}
 	if resp == nil || resp.Body == nil {
 		return fmt.Errorf("response or response body is nil")
 	}
@@ -166,6 +188,18 @@ func (a *CrewAIAdapter) TranslateStream(ctx context.Context, agent *config.Agent
 			}
 
 			if gjson.Valid(data) {
+				if errVal := gjson.Get(data, "error"); errVal.Exists() {
+					errMsg := errVal.String()
+					if msg := errVal.Get("message"); msg.Exists() && msg.String() != "" {
+						errMsg = msg.String()
+					}
+					if errMsg == "" {
+						errMsg = "unknown stream error"
+					}
+					emitter.Emit(model.EventTaskError, map[string]any{"error": errMsg, "agent_id": agent.ID})
+					return fmt.Errorf("upstream stream error: %s", errMsg)
+				}
+
 				if gjson.Get(data, "thought").Exists() || gjson.Get(data, "action").Exists() || gjson.Get(data, "step").Exists() {
 					stepName := "step"
 					if gjson.Get(data, "thought").Exists() {

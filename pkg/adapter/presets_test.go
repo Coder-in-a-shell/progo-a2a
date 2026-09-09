@@ -658,6 +658,9 @@ func TestPresetsNilChecks(t *testing.T) {
 			if _, err := a.TranslateResponse(context.Background(), agent, &http.Response{}); err == nil {
 				t.Errorf("%s: expected error on response with nil body", a.Type())
 			}
+			if _, err := a.TranslateResponse(context.Background(), nil, &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewBufferString("{}"))}); err == nil {
+				t.Errorf("%s: expected error on nil agent", a.Type())
+			}
 		})
 
 		t.Run(a.Type()+"_nil_stream", func(t *testing.T) {
@@ -668,6 +671,12 @@ func TestPresetsNilChecks(t *testing.T) {
 			}
 			if err := a.TranslateStream(context.Background(), agent, &http.Response{}, emitter); err == nil {
 				t.Errorf("%s: expected error on response with nil body", a.Type())
+			}
+			if err := a.TranslateStream(context.Background(), nil, &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewBufferString(""))}, emitter); err == nil {
+				t.Errorf("%s: expected error on nil agent", a.Type())
+			}
+			if err := a.TranslateStream(context.Background(), agent, &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewBufferString(""))}, nil); err == nil {
+				t.Errorf("%s: expected error on nil emitter", a.Type())
 			}
 		})
 	}
@@ -766,6 +775,282 @@ func TestOpenAIOptionsAndVariedInputs(t *testing.T) {
 	}
 	if taskResp.Output != "legacy completion text" {
 		t.Errorf("expected legacy completion text, got %v", taskResp.Output)
+	}
+}
+
+func TestOpenAIResponseToolCalls(t *testing.T) {
+	adapter := NewOpenAIAdapter()
+	agent := &config.AgentConfig{ID: "openai-test", Type: "openai"}
+	fakeResp := `{
+		"id": "chatcmpl-tool",
+		"choices": [{
+			"message": {
+				"role": "assistant",
+				"content": null,
+				"tool_calls": [
+					{
+						"id": "call_123",
+						"type": "function",
+						"function": {
+							"name": "get_current_weather",
+							"arguments": "{\"location\":\"San Francisco\"}"
+						}
+					}
+				]
+			}
+		}]
+	}`
+	httpResp := &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(bytes.NewBufferString(fakeResp)),
+	}
+	resp, err := adapter.TranslateResponse(context.Background(), agent, httpResp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Status != model.StatusCompleted {
+		t.Fatalf("expected completed, got %v", resp.Status)
+	}
+	toolCalls, ok := resp.Output.([]any)
+	if !ok || len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool call in output, got %+v", resp.Output)
+	}
+	firstCall, ok := toolCalls[0].(map[string]any)
+	if !ok || firstCall["id"] != "call_123" {
+		t.Fatalf("expected call_123, got %+v", firstCall)
+	}
+}
+
+func TestOpenAIMidStreamError(t *testing.T) {
+	adapter := NewOpenAIAdapter()
+	agent := &config.AgentConfig{ID: "openai-test", Type: "openai"}
+	streamData := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"Hi"}}]}`,
+		`data: {"error":{"message":"mid-stream quota exceeded","type":"insufficient_quota"}}`,
+		"",
+	}, "\n")
+	httpResp := &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(bytes.NewBufferString(streamData)),
+	}
+	emitter := &mockEmitter{}
+	err := adapter.TranslateStream(context.Background(), agent, httpResp, emitter)
+	if err == nil {
+		t.Fatal("expected stream error, got nil")
+	}
+	if !strings.Contains(err.Error(), "mid-stream quota exceeded") {
+		t.Fatalf("expected error containing 'mid-stream quota exceeded', got %v", err)
+	}
+	events := emitter.Events()
+	var hasErrorEvent bool
+	for _, e := range events {
+		if e.Type == model.EventTaskError {
+			hasErrorEvent = true
+			errMap, ok := e.Data.(map[string]any)
+			if !ok || !strings.Contains(fmt.Sprint(errMap["error"]), "mid-stream quota exceeded") {
+				t.Fatalf("expected error message in event data, got %+v", e.Data)
+			}
+		}
+	}
+	if !hasErrorEvent {
+		t.Fatal("expected EventTaskError to be emitted")
+	}
+}
+
+func TestLangGraphMidStreamError(t *testing.T) {
+	adapter := NewLangGraphAdapter()
+	agent := &config.AgentConfig{ID: "lg-test", Type: "langgraph"}
+	streamData := strings.Join([]string{
+		`event: values`,
+		`data: {"step":1}`,
+		``,
+		`event: error`,
+		`data: {"message":"graph execution failed in node 'search'"}`,
+		``,
+	}, "\n")
+	httpResp := &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(bytes.NewBufferString(streamData)),
+	}
+	emitter := &mockEmitter{}
+	err := adapter.TranslateStream(context.Background(), agent, httpResp, emitter)
+	if err == nil {
+		t.Fatal("expected stream error, got nil")
+	}
+	if !strings.Contains(err.Error(), "graph execution failed in node 'search'") {
+		t.Fatalf("expected graph execution error message, got %v", err)
+	}
+	events := emitter.Events()
+	var hasErrorEvent bool
+	for _, e := range events {
+		if e.Type == model.EventTaskError {
+			hasErrorEvent = true
+			errMap, ok := e.Data.(map[string]any)
+			if !ok || !strings.Contains(fmt.Sprint(errMap["error"]), "graph execution failed in node 'search'") {
+				t.Fatalf("expected error message in event data, got %+v", e.Data)
+			}
+		}
+	}
+	if !hasErrorEvent {
+		t.Fatal("expected EventTaskError to be emitted")
+	}
+}
+
+func TestLangGraphConfigurableMerge(t *testing.T) {
+	adapter := NewLangGraphAdapter()
+	agent := &config.AgentConfig{
+		ID:       "lg-test",
+		Type:     "langgraph",
+		Endpoint: "http://localhost:8000/runs/wait",
+		Options: map[string]any{
+			"config": map[string]any{
+				"configurable": map[string]any{
+					"model_name": "claude-3-5-sonnet",
+					"thread_id":  "should-not-overwrite-task-thread-id",
+					"user_id":    "user-999",
+				},
+				"tags": []string{"production", "v2"},
+			},
+		},
+	}
+	task := &model.TaskRequest{
+		ID:    "original-thread-id",
+		Input: "hello",
+	}
+	req, err := adapter.TranslateRequest(context.Background(), agent, task)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	body, _ := io.ReadAll(req.Body)
+	bodyStr := string(body)
+
+	if !strings.Contains(bodyStr, `"thread_id":"original-thread-id"`) {
+		t.Fatalf("expected thread_id to be preserved as 'original-thread-id', got: %s", bodyStr)
+	}
+	if strings.Contains(bodyStr, "should-not-overwrite-task-thread-id") {
+		t.Fatalf("thread_id was overwritten by options: %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, `"model_name":"claude-3-5-sonnet"`) {
+		t.Fatalf("expected model_name to be merged into configurable: %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, `"user_id":"user-999"`) {
+		t.Fatalf("expected user_id to be merged into configurable: %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, `"tags":["production","v2"]`) {
+		t.Fatalf("expected tags to be present in config: %s", bodyStr)
+	}
+}
+
+func TestCrewAIResponseStatusFailedWithError(t *testing.T) {
+	adapter := NewCrewAIAdapter()
+	agent := &config.AgentConfig{ID: "crew-test", Type: "crewai"}
+	fakeResp := `{"status":"failed","error":"Agent failed to execute tool"}`
+	httpResp := &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(bytes.NewBufferString(fakeResp)),
+	}
+	resp, err := adapter.TranslateResponse(context.Background(), agent, httpResp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Status != model.StatusFailed {
+		t.Fatalf("expected status failed, got %s", resp.Status)
+	}
+	if resp.Error == nil || !strings.Contains(*resp.Error, "Agent failed to execute tool") {
+		t.Fatalf("expected error message extracted, got %+v", resp.Error)
+	}
+}
+
+func TestCrewAIMidStreamError(t *testing.T) {
+	adapter := NewCrewAIAdapter()
+	agent := &config.AgentConfig{ID: "crew-test", Type: "crewai"}
+	streamData := strings.Join([]string{
+		`data: {"thought":"Thinking..."}`,
+		`data: {"error":{"message":"agent memory limit reached"}}`,
+		"",
+	}, "\n")
+	httpResp := &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(bytes.NewBufferString(streamData)),
+	}
+	emitter := &mockEmitter{}
+	err := adapter.TranslateStream(context.Background(), agent, httpResp, emitter)
+	if err == nil {
+		t.Fatal("expected stream error, got nil")
+	}
+	if !strings.Contains(err.Error(), "agent memory limit reached") {
+		t.Fatalf("expected error containing 'agent memory limit reached', got %v", err)
+	}
+	events := emitter.Events()
+	var hasErrorEvent bool
+	for _, e := range events {
+		if e.Type == model.EventTaskError {
+			hasErrorEvent = true
+			errMap, ok := e.Data.(map[string]any)
+			if !ok || !strings.Contains(fmt.Sprint(errMap["error"]), "agent memory limit reached") {
+				t.Fatalf("expected error message in event data, got %+v", e.Data)
+			}
+		}
+	}
+	if !hasErrorEvent {
+		t.Fatal("expected EventTaskError to be emitted")
+	}
+}
+
+func TestAutoGenEmptyChatHistory(t *testing.T) {
+	adapter := NewAutoGenAdapter()
+	agent := &config.AgentConfig{ID: "ag-test", Type: "autogen"}
+	fakeResp := `{"chat_history":[],"result":"fallback content"}`
+	httpResp := &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(bytes.NewBufferString(fakeResp)),
+	}
+	resp, err := adapter.TranslateResponse(context.Background(), agent, httpResp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Output == nil {
+		t.Fatal("expected non-nil output for empty chat_history")
+	}
+	outMap, ok := resp.Output.(map[string]any)
+	if !ok || outMap["result"] != "fallback content" {
+		t.Fatalf("expected fallback parsed body, got %+v", resp.Output)
+	}
+}
+
+func TestAutoGenMidStreamError(t *testing.T) {
+	adapter := NewAutoGenAdapter()
+	agent := &config.AgentConfig{ID: "ag-test", Type: "autogen"}
+	streamData := strings.Join([]string{
+		`data: {"step":"step1"}`,
+		`data: {"error":{"message":"groupchat timeout"}}`,
+		"",
+	}, "\n")
+	httpResp := &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(bytes.NewBufferString(streamData)),
+	}
+	emitter := &mockEmitter{}
+	err := adapter.TranslateStream(context.Background(), agent, httpResp, emitter)
+	if err == nil {
+		t.Fatal("expected stream error, got nil")
+	}
+	if !strings.Contains(err.Error(), "groupchat timeout") {
+		t.Fatalf("expected error containing 'groupchat timeout', got %v", err)
+	}
+	events := emitter.Events()
+	var hasErrorEvent bool
+	for _, e := range events {
+		if e.Type == model.EventTaskError {
+			hasErrorEvent = true
+			errMap, ok := e.Data.(map[string]any)
+			if !ok || !strings.Contains(fmt.Sprint(errMap["error"]), "groupchat timeout") {
+				t.Fatalf("expected error message in event data, got %+v", e.Data)
+			}
+		}
+	}
+	if !hasErrorEvent {
+		t.Fatal("expected EventTaskError to be emitted")
 	}
 }
 

@@ -114,6 +114,9 @@ func (a *OpenAIAdapter) TranslateRequest(ctx context.Context, agent *config.Agen
 }
 
 func (a *OpenAIAdapter) TranslateResponse(ctx context.Context, agent *config.AgentConfig, resp *http.Response) (*model.TaskResponse, error) {
+	if agent == nil {
+		return nil, fmt.Errorf("agent must not be nil")
+	}
 	if resp == nil || resp.Body == nil {
 		return nil, fmt.Errorf("response or response body is nil")
 	}
@@ -144,9 +147,12 @@ func (a *OpenAIAdapter) TranslateResponse(ctx context.Context, agent *config.Age
 	}
 
 	val := gjson.Get(bodyStr, "choices.0.message.content")
-	if val.Exists() {
+	toolCalls := gjson.Get(bodyStr, "choices.0.message.tool_calls")
+	if val.Exists() && val.Type != gjson.Null && val.String() != "" {
 		taskResp.Output = val.String()
-	} else if txt := gjson.Get(bodyStr, "choices.0.text"); txt.Exists() {
+	} else if toolCalls.Exists() && toolCalls.Type != gjson.Null {
+		taskResp.Output = toolCalls.Value()
+	} else if txt := gjson.Get(bodyStr, "choices.0.text"); txt.Exists() && txt.Type != gjson.Null && txt.String() != "" {
 		taskResp.Output = txt.String()
 	} else {
 		var parsed any
@@ -161,6 +167,12 @@ func (a *OpenAIAdapter) TranslateResponse(ctx context.Context, agent *config.Age
 }
 
 func (a *OpenAIAdapter) TranslateStream(ctx context.Context, agent *config.AgentConfig, resp *http.Response, emitter stream.Emitter) error {
+	if agent == nil {
+		return fmt.Errorf("agent must not be nil")
+	}
+	if emitter == nil {
+		return fmt.Errorf("emitter must not be nil")
+	}
 	if resp == nil || resp.Body == nil {
 		return fmt.Errorf("response or response body is nil")
 	}
@@ -196,6 +208,18 @@ func (a *OpenAIAdapter) TranslateStream(ctx context.Context, agent *config.Agent
 			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if data == "[DONE]" {
 				break
+			}
+
+			if errVal := gjson.Get(data, "error"); errVal.Exists() {
+				errMsg := errVal.String()
+				if msg := errVal.Get("message"); msg.Exists() && msg.String() != "" {
+					errMsg = msg.String()
+				}
+				if errMsg == "" {
+					errMsg = "unknown stream error"
+				}
+				emitter.Emit(model.EventTaskError, map[string]any{"error": errMsg, "agent_id": agent.ID})
+				return fmt.Errorf("upstream stream error: %s", errMsg)
 			}
 
 			delta := gjson.Get(data, "choices.0.delta.content")
