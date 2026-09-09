@@ -18,6 +18,11 @@ type Server struct {
 	disp       *dispatcher.Dispatcher
 }
 
+// New creates a new Server instance configured with routes, middleware, and server timeouts.
+func New(cfg *config.Config, disp *dispatcher.Dispatcher, opts ...RouterOption) *Server {
+	return NewServer(cfg, disp, opts...)
+}
+
 // NewServer creates a new Server instance configured with routes, middleware, and server timeouts.
 func NewServer(cfg *config.Config, disp *dispatcher.Dispatcher, opts ...RouterOption) *Server {
 	handler := SetupRouter(cfg, disp, opts...)

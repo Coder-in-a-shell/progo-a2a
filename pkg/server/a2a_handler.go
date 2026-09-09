@@ -1,32 +1,123 @@
 package server
 
 import (
+	"container/list"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
+	"time"
 
 	"a2a-proxy/pkg/config"
 	"a2a-proxy/pkg/dispatcher"
+	"a2a-proxy/pkg/metrics"
 	"a2a-proxy/pkg/model"
 	"a2a-proxy/pkg/stream"
 )
 
+const defaultMaxTasks = 10000
+
+type taskStore struct {
+	mu       sync.RWMutex
+	maxTasks int
+	tasks    map[string]*list.Element
+	ll       *list.List
+}
+
+type taskItem struct {
+	id   string
+	resp *model.TaskResponse
+}
+
+func newTaskStore(maxTasks int) *taskStore {
+	if maxTasks <= 0 {
+		maxTasks = defaultMaxTasks
+	}
+	return &taskStore{
+		maxTasks: maxTasks,
+		tasks:    make(map[string]*list.Element),
+		ll:       list.New(),
+	}
+}
+
+func (s *taskStore) Store(id string, resp *model.TaskResponse) {
+	if id == "" || resp == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if elem, ok := s.tasks[id]; ok {
+		elem.Value = taskItem{id: id, resp: resp}
+		s.ll.MoveToBack(elem)
+		return
+	}
+
+	for len(s.tasks) >= s.maxTasks && s.ll.Len() > 0 {
+		front := s.ll.Front()
+		if front == nil {
+			break
+		}
+		item := front.Value.(taskItem)
+		delete(s.tasks, item.id)
+		s.ll.Remove(front)
+	}
+
+	elem := s.ll.PushBack(taskItem{id: id, resp: resp})
+	s.tasks[id] = elem
+}
+
+func (s *taskStore) Load(id string) (*model.TaskResponse, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	elem, ok := s.tasks[id]
+	if !ok {
+		return nil, false
+	}
+	return elem.Value.(taskItem).resp, true
+}
+
 // A2AHandler handles standard Agent-to-Agent (A2A) protocol endpoints.
 type A2AHandler struct {
-	cfg   *config.Config
-	disp  *dispatcher.Dispatcher
-	tasks sync.Map // map[string]*model.TaskResponse
+	cfg             *config.Config
+	disp            *dispatcher.Dispatcher
+	metricsRegistry *metrics.Registry
+	tasks           *taskStore
 }
 
 // NewA2AHandler creates a new A2AHandler.
-func NewA2AHandler(cfg *config.Config, disp *dispatcher.Dispatcher) *A2AHandler {
-	return &A2AHandler{
-		cfg:  cfg,
-		disp: disp,
+func NewA2AHandler(cfg *config.Config, disp *dispatcher.Dispatcher, reg ...*metrics.Registry) *A2AHandler {
+	var m *metrics.Registry
+	if len(reg) > 0 {
+		m = reg[0]
 	}
+	return &A2AHandler{
+		cfg:             cfg,
+		disp:            disp,
+		metricsRegistry: m,
+		tasks:           newTaskStore(defaultMaxTasks),
+	}
+}
+
+// SetMetricsRegistry configures the metrics registry used by the handler.
+func (h *A2AHandler) SetMetricsRegistry(reg *metrics.Registry) {
+	h.metricsRegistry = reg
+}
+
+// SetMaxTasks configures the maximum number of cached task responses.
+func (h *A2AHandler) SetMaxTasks(max int) {
+	h.tasks = newTaskStore(max)
+}
+
+func (h *A2AHandler) getMetrics() *metrics.Registry {
+	if h.metricsRegistry != nil {
+		return h.metricsRegistry
+	}
+	return metrics.DefaultRegistry
 }
 
 // StoreTask stores a task response in the in-memory task map.
@@ -35,6 +126,7 @@ func (h *A2AHandler) StoreTask(resp *model.TaskResponse) {
 		h.tasks.Store(resp.TaskID, resp)
 	}
 }
+
 
 // ListAgents handles GET /a2a/v1/agents, returning all configured agents as model.AgentListResponse.
 func (h *A2AHandler) ListAgents(w http.ResponseWriter, r *http.Request) {
@@ -93,7 +185,8 @@ func (h *A2AHandler) GetAgent(w http.ResponseWriter, r *http.Request) {
 // DispatchTask handles POST /a2a/v1/tasks.
 func (h *A2AHandler) DispatchTask(w http.ResponseWriter, r *http.Request) {
 	var task model.TaskRequest
-	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+	limitedBody := io.LimitReader(r.Body, 10*1024*1024)
+	if err := json.NewDecoder(limitedBody).Decode(&task); err != nil {
 		writeA2AError(w, "INVALID_REQUEST", "Failed to parse JSON body: "+err.Error(), "", http.StatusBadRequest)
 		return
 	}
@@ -149,7 +242,8 @@ func (h *A2AHandler) DispatchTask(w http.ResponseWriter, r *http.Request) {
 // DispatchTaskStream handles POST /a2a/v1/tasks/stream.
 func (h *A2AHandler) DispatchTaskStream(w http.ResponseWriter, r *http.Request) {
 	var task model.TaskRequest
-	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+	limitedBody := io.LimitReader(r.Body, 10*1024*1024)
+	if err := json.NewDecoder(limitedBody).Decode(&task); err != nil {
 		writeA2AError(w, "INVALID_REQUEST", "Failed to parse JSON body: "+err.Error(), "", http.StatusBadRequest)
 		return
 	}
@@ -181,11 +275,18 @@ func (h *A2AHandler) DispatchTaskStream(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// Clear write deadline for SSE streams
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
 	sseWriter, err := stream.NewSSEResponseWriter(w)
 	if err != nil {
 		writeA2AError(w, "STREAM_UNSUPPORTED", err.Error(), task.AgentID, http.StatusInternalServerError)
 		return
 	}
+
+	h.getMetrics().IncActiveStreams()
+	defer h.getMetrics().DecActiveStreams()
 
 	task.Stream = true
 	if err := h.disp.DispatchStream(r.Context(), &task, sseWriter); err != nil {
@@ -194,6 +295,7 @@ func (h *A2AHandler) DispatchTaskStream(w http.ResponseWriter, r *http.Request) 
 		})
 	}
 }
+
 
 // GetTask handles GET /a2a/v1/tasks/{task_id}.
 func (h *A2AHandler) GetTask(w http.ResponseWriter, r *http.Request) {

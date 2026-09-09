@@ -6,28 +6,49 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"a2a-proxy/pkg/config"
 	"a2a-proxy/pkg/dispatcher"
+	"a2a-proxy/pkg/metrics"
 	"a2a-proxy/pkg/model"
 	"a2a-proxy/pkg/stream"
 )
 
 // RESTHandler provides simplified REST endpoints for direct agent invocation and streaming.
 type RESTHandler struct {
-	cfg        *config.Config
-	disp       *dispatcher.Dispatcher
-	a2aHandler *A2AHandler
+	cfg             *config.Config
+	disp            *dispatcher.Dispatcher
+	a2aHandler      *A2AHandler
+	metricsRegistry *metrics.Registry
 }
 
 // NewRESTHandler creates a new RESTHandler.
-func NewRESTHandler(cfg *config.Config, disp *dispatcher.Dispatcher, a2aHandler *A2AHandler) *RESTHandler {
+func NewRESTHandler(cfg *config.Config, disp *dispatcher.Dispatcher, a2aHandler *A2AHandler, reg ...*metrics.Registry) *RESTHandler {
+	var m *metrics.Registry
+	if len(reg) > 0 {
+		m = reg[0]
+	}
 	return &RESTHandler{
-		cfg:        cfg,
-		disp:       disp,
-		a2aHandler: a2aHandler,
+		cfg:             cfg,
+		disp:            disp,
+		a2aHandler:      a2aHandler,
+		metricsRegistry: m,
 	}
 }
+
+// SetMetricsRegistry configures the metrics registry used by the handler.
+func (h *RESTHandler) SetMetricsRegistry(reg *metrics.Registry) {
+	h.metricsRegistry = reg
+}
+
+func (h *RESTHandler) getMetrics() *metrics.Registry {
+	if h.metricsRegistry != nil {
+		return h.metricsRegistry
+	}
+	return metrics.DefaultRegistry
+}
+
 
 // InvokeAgent handles POST /api/v1/invoke/{agent_id}.
 func (h *RESTHandler) InvokeAgent(w http.ResponseWriter, r *http.Request) {
@@ -116,11 +137,18 @@ func (h *RESTHandler) StreamAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	task.Stream = true
 
+	// Clear write deadline for SSE streams
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
 	sseWriter, err := stream.NewSSEResponseWriter(w)
 	if err != nil {
 		writeA2AError(w, "STREAM_UNSUPPORTED", err.Error(), agentID, http.StatusInternalServerError)
 		return
 	}
+
+	h.getMetrics().IncActiveStreams()
+	defer h.getMetrics().DecActiveStreams()
 
 	if err := h.disp.DispatchStream(r.Context(), task, sseWriter); err != nil {
 		_ = sseWriter.Emit(model.EventTaskError, map[string]string{
@@ -130,7 +158,8 @@ func (h *RESTHandler) StreamAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *RESTHandler) buildTaskFromBody(r *http.Request, agentID string) (*model.TaskRequest, error) {
-	bodyBytes, err := io.ReadAll(r.Body)
+	limitedBody := io.LimitReader(r.Body, 10*1024*1024)
+	bodyBytes, err := io.ReadAll(limitedBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read body: %w", err)
 	}

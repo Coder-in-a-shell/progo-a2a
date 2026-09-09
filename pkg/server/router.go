@@ -44,8 +44,8 @@ func SetupRouter(cfg *config.Config, disp *dispatcher.Dispatcher, opts ...Router
 
 	mux := http.NewServeMux()
 
-	a2aH := NewA2AHandler(cfg, disp)
-	restH := NewRESTHandler(cfg, disp, a2aH)
+	a2aH := NewA2AHandler(cfg, disp, rc.metricsRegistry)
+	restH := NewRESTHandler(cfg, disp, a2aH, rc.metricsRegistry)
 	healthH := NewHealthHandler(cfg, disp)
 
 	// Standard A2A Routes

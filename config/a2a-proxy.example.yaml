@@ -1,0 +1,189 @@
+# ==============================================================================
+# A2A Proxy Reference Configuration
+# ==============================================================================
+# This configuration file defines the HTTP server, security controls, and
+# downstream agent integrations for the Agent-to-Agent (A2A) Proxy gateway.
+# Environment variables using the ${VAR_NAME} syntax are automatically expanded.
+# ==============================================================================
+
+# Server configuration
+server:
+  host: "0.0.0.0"
+  port: 8080
+  read_timeout_seconds: 30
+  write_timeout_seconds: 120
+  idle_timeout_seconds: 60
+
+# Security & Access Control
+security:
+  enabled: true
+  api_keys:
+    # Full access administrator key
+    - key: "admin-secret-key-12345"
+      client_id: "admin-client"
+      allowed_agents:
+        - "*"
+
+    # Restricted client key with access to specific agents
+    - key: "analyst-secret-key-67890"
+      client_id: "analyst-client"
+      allowed_agents:
+        - "langgraph-researcher"
+        - "openai-gpt4o"
+
+
+# Downstream Agents
+# Demonstrates presets for LangGraph, CrewAI, AutoGen, OpenAI, and Custom webhook
+agents:
+  # ----------------------------------------------------------------------------
+  # 1. LangGraph Preset (type: langgraph)
+  # Translates A2A tasks into LangGraph runs (/runs/wait, /runs/stream).
+  # ----------------------------------------------------------------------------
+  - id: "langgraph-researcher"
+    name: "LangGraph Research Agent"
+    description: "Iterative deep-search research agent powered by LangGraph state machine"
+    type: "langgraph"
+    endpoint: "http://localhost:8000/runs/wait"
+    capabilities:
+      - "research"
+      - "deep-search"
+      - "literature-review"
+    tags:
+      - "langgraph"
+      - "python"
+      - "state-machine"
+    timeout_seconds: 60
+    retries: 2
+    fallback_agent_ids:
+      - "openai-gpt4o"
+    auth:
+      type: "bearer"
+      token: "${LANGGRAPH_API_KEY}"
+    options:
+      assistant_id: "researcher"
+
+  # ----------------------------------------------------------------------------
+  # 2. CrewAI Preset (type: crewai)
+  # Translates A2A tasks into CrewAI multi-agent crew execution (/kickoff).
+  # ----------------------------------------------------------------------------
+  - id: "crewai-writer"
+    name: "CrewAI Technical Writer"
+    description: "Multi-agent crew collaborating on technical documentation and reports"
+    type: "crewai"
+    endpoint: "http://localhost:5000/kickoff"
+    capabilities:
+      - "writing"
+      - "technical-writing"
+      - "documentation"
+    tags:
+      - "crewai"
+      - "multi-agent"
+      - "content"
+    timeout_seconds: 90
+    retries: 1
+    fallback_agent_ids:
+      - "openai-gpt4o"
+    auth:
+      type: "header"
+      header_name: "X-Crew-Token"
+      header_value: "${CREWAI_API_TOKEN}"
+    options:
+      crew_name: "technical-docs-crew"
+
+  # ----------------------------------------------------------------------------
+  # 3. AutoGen Preset (type: autogen)
+  # Translates A2A tasks into conversational multi-agent chat (/chat).
+  # ----------------------------------------------------------------------------
+  - id: "autogen-coder"
+    name: "AutoGen Pair Programmer"
+    description: "Collaborative conversational coding agents solving complex refactors"
+    type: "autogen"
+    endpoint: "http://localhost:8088/chat"
+    capabilities:
+      - "coding"
+      - "code-generation"
+      - "refactoring"
+    tags:
+      - "autogen"
+      - "code"
+      - "conversational"
+    timeout_seconds: 60
+    retries: 2
+    fallback_agent_ids:
+      - "openai-gpt4o"
+    auth:
+      type: "bearer"
+      token: "${AUTOGEN_API_KEY}"
+    options:
+      sender: "user-proxy"
+      recipient: "assistant-bot"
+
+  # ----------------------------------------------------------------------------
+  # 4. OpenAI Preset (type: openai)
+  # Translates A2A tasks directly into OpenAI Chat Completions API calls.
+  # ----------------------------------------------------------------------------
+  - id: "openai-gpt4o"
+    name: "OpenAI GPT-4o Reasoning Agent"
+    description: "General reasoning and multi-turn chat powered by OpenAI GPT-4o"
+    type: "openai"
+    endpoint: "https://api.openai.com/v1/chat/completions"
+    capabilities:
+      - "general-reasoning"
+      - "chat"
+      - "summarization"
+      - "fallback"
+    tags:
+      - "openai"
+      - "llm"
+      - "gpt-4o"
+    timeout_seconds: 45
+    retries: 3
+    auth:
+      type: "bearer"
+      token: "${OPENAI_API_KEY}"
+    options:
+      model: "gpt-4o"
+      temperature: 0.7
+      max_tokens: 4096
+
+  # ----------------------------------------------------------------------------
+  # 5. Custom Webhook Preset (type: custom)
+  # Framework-agnostic webhook using Go text/template request transformation
+  # and JSONPath response & SSE stream extraction.
+  # ----------------------------------------------------------------------------
+  - id: "custom-enterprise-agent"
+    name: "Enterprise Knowledge Base Agent"
+    description: "Custom internal webhook service providing enterprise search and retrieval"
+    type: "custom"
+    endpoint: "https://agent.enterprise.internal/v1/execute"
+    capabilities:
+      - "enterprise-search"
+      - "internal-kb"
+      - "compliance-check"
+    tags:
+      - "custom"
+      - "webhook"
+      - "enterprise"
+    timeout_seconds: 30
+    retries: 2
+    fallback_agent_ids:
+      - "openai-gpt4o"
+    auth:
+      type: "header"
+      header_name: "X-Enterprise-Auth"
+      header_value: "${ENTERPRISE_AUTH_TOKEN}"
+    mapping:
+      request:
+        method: "POST"
+        headers:
+          Content-Type: "application/json"
+          Accept: "application/json"
+        body_template: '{"task_id": {{ .Task.ID | toJson }}, "query": {{ .Task.Input | toJson }}, "session": {{ default "main" .Task.Context.session_id | toJson }}}'
+      response:
+        output_path: "$.result.answer"
+        status_path: "$.result.status"
+        artifacts_path: "$.result.artifacts"
+        error_path: "$.error.message"
+      stream:
+        data_path: "$.delta.text"
+        done_sentinel: "[DONE]"

@@ -659,3 +659,130 @@ func TestServerLifecycle(t *testing.T) {
 		t.Errorf("expected ErrServerClosed, got %v", serverErr)
 	}
 }
+
+func TestTaskStoreBounding(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{ID: "bot-1", Name: "Bot 1", Type: "mock"},
+		},
+	}
+	reg := adapter.NewRegistry()
+	reg.Register(&mockAdapter{adapterType: "mock"})
+	disp := dispatcher.New(cfg, reg)
+
+	handler := NewA2AHandler(cfg, disp)
+	handler.SetMaxTasks(3)
+
+	// Store 5 tasks
+	for i := 1; i <= 5; i++ {
+		handler.StoreTask(&model.TaskResponse{
+			TaskID:    fmt.Sprintf("task-%d", i),
+			AgentID:   "bot-1",
+			Status:    model.StatusCompleted,
+			Output:    fmt.Sprintf("output-%d", i),
+			Timestamp: time.Now().UTC(),
+		})
+	}
+
+	// First two tasks (task-1, task-2) should have been pruned
+	req1 := httptest.NewRequest("GET", "/a2a/v1/tasks/task-1", nil)
+	rec1 := httptest.NewRecorder()
+	handler.GetTask(rec1, req1)
+	if rec1.Code != http.StatusNotFound {
+		t.Errorf("expected task-1 to be pruned (404), got %d", rec1.Code)
+	}
+
+	req2 := httptest.NewRequest("GET", "/a2a/v1/tasks/task-2", nil)
+	rec2 := httptest.NewRecorder()
+	handler.GetTask(rec2, req2)
+	if rec2.Code != http.StatusNotFound {
+		t.Errorf("expected task-2 to be pruned (404), got %d", rec2.Code)
+	}
+
+	// Last three tasks (task-3, task-4, task-5) should be present
+	for i := 3; i <= 5; i++ {
+		req := httptest.NewRequest("GET", fmt.Sprintf("/a2a/v1/tasks/task-%d", i), nil)
+		rec := httptest.NewRecorder()
+		handler.GetTask(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected task-%d to be present (200), got %d", i, rec.Code)
+		}
+	}
+}
+
+type metricCheckingAdapter struct {
+	metricsReg    *metrics.Registry
+	activeChecked int64
+}
+
+func (m *metricCheckingAdapter) Type() string {
+	return "metric-checker"
+}
+
+func (m *metricCheckingAdapter) TranslateRequest(ctx context.Context, agent *config.AgentConfig, task *model.TaskRequest) (*http.Request, error) {
+	return http.NewRequestWithContext(ctx, "POST", "http://agent.internal", bytes.NewBufferString(`{}`))
+}
+
+func (m *metricCheckingAdapter) TranslateResponse(ctx context.Context, agent *config.AgentConfig, resp *http.Response) (*model.TaskResponse, error) {
+	return &model.TaskResponse{Status: model.StatusCompleted}, nil
+}
+
+func (m *metricCheckingAdapter) TranslateStream(ctx context.Context, agent *config.AgentConfig, resp *http.Response, emitter stream.Emitter) error {
+	m.activeChecked = m.metricsReg.GetActiveStreams()
+	_ = emitter.Emit(model.EventTokenDelta, map[string]string{"delta": "hello"})
+	return nil
+}
+
+func TestStreamActiveStreamsMetric(t *testing.T) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{ID: "check-bot", Name: "Checker", Type: "metric-checker"},
+		},
+	}
+	metricsReg := metrics.NewRegistry()
+	checker := &metricCheckingAdapter{metricsReg: metricsReg}
+
+	reg := adapter.NewRegistry()
+	reg.Register(checker)
+	disp := dispatcher.New(cfg, reg)
+	disp.SetHTTPClient(&http.Client{
+		Transport: &mockTransport{},
+	})
+
+	router := SetupRouter(cfg, disp, WithMetricsRegistry(metricsReg))
+
+	// Test A2A stream endpoint
+	a2aBody := `{"agent_id":"check-bot","input":"test"}`
+	req1 := httptest.NewRequest("POST", "/a2a/v1/tasks/stream", strings.NewReader(a2aBody))
+	req1.Header.Set("Content-Type", "application/json")
+	rec1 := httptest.NewRecorder()
+	router.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec1.Code)
+	}
+	if checker.activeChecked != 1 {
+		t.Errorf("expected activeStreams=1 during A2A streaming, got %d", checker.activeChecked)
+	}
+	if current := metricsReg.GetActiveStreams(); current != 0 {
+		t.Errorf("expected activeStreams=0 after streaming finished, got %d", current)
+	}
+
+	// Test REST stream endpoint
+	restBody := `{"input":"test"}`
+	req2 := httptest.NewRequest("POST", "/api/v1/stream/check-bot", strings.NewReader(restBody))
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec2.Code)
+	}
+	if checker.activeChecked != 1 {
+		t.Errorf("expected activeStreams=1 during REST streaming, got %d", checker.activeChecked)
+	}
+	if current := metricsReg.GetActiveStreams(); current != 0 {
+		t.Errorf("expected activeStreams=0 after streaming finished, got %d", current)
+	}
+}
+

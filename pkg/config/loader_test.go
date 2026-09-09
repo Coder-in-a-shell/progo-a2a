@@ -266,3 +266,34 @@ func TestExpandEnv(t *testing.T) {
 	}
 }
 
+func TestLoadReferenceExampleConfig(t *testing.T) {
+	cfg, err := Load("../../config/a2a-proxy.example.yaml")
+	if err != nil {
+		t.Fatalf("failed to load example config: %v", err)
+	}
+
+	if cfg.Server.Port != 8080 {
+		t.Errorf("expected port 8080, got %d", cfg.Server.Port)
+	}
+	if !cfg.Security.Enabled {
+		t.Errorf("expected security enabled")
+	}
+	if len(cfg.Security.APIKeys) < 2 {
+		t.Errorf("expected at least 2 api keys, got %d", len(cfg.Security.APIKeys))
+	}
+	if len(cfg.Agents) != 5 {
+		t.Fatalf("expected 5 example agents, got %d", len(cfg.Agents))
+	}
+
+	types := make(map[string]bool)
+	for _, a := range cfg.Agents {
+		types[a.Type] = true
+	}
+	for _, expectedType := range []string{"langgraph", "crewai", "autogen", "openai", "custom"} {
+		if !types[expectedType] {
+			t.Errorf("missing agent type %s in example config", expectedType)
+		}
+	}
+}
+
+

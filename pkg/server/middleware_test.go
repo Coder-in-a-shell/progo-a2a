@@ -557,3 +557,22 @@ func TestAuthMiddleware_PublicEndpointsBypass(t *testing.T) {
 		}
 	}
 }
+
+func TestResponseWriterWrapper_Unwrap(t *testing.T) {
+	rec := httptest.NewRecorder()
+	wrapper := &responseWriterWrapper{
+		ResponseWriter: rec,
+		statusCode:     http.StatusOK,
+	}
+
+	if unwrapped := wrapper.Unwrap(); unwrapped != rec {
+		t.Fatalf("expected unwrapped writer to be original rec, got %v", unwrapped)
+	}
+
+	// Verify http.NewResponseController can inspect unwrapped ResponseWriter
+	rc := http.NewResponseController(wrapper)
+	if rc == nil {
+		t.Fatal("expected non-nil ResponseController")
+	}
+}
+
