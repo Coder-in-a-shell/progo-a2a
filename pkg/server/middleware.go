@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -32,6 +33,22 @@ const (
 type ClientCredentials struct {
 	ClientID      string
 	AllowedAgents []string
+}
+
+// Allows reports whether the client credentials permit access to the specified agentID.
+func (c ClientCredentials) Allows(agentID string) bool {
+	return IsAgentAllowed(c.AllowedAgents, agentID)
+}
+
+// IsAgentAllowed reports whether agentID matches any pattern in allowed.
+// A wildcard "*" grants access to all agents.
+func IsAgentAllowed(allowed []string, agentID string) bool {
+	for _, a := range allowed {
+		if a == "*" || a == agentID {
+			return true
+		}
+	}
+	return false
 }
 
 // GetRequestID extracts the request/trace ID from context, or returns an empty string.
@@ -94,6 +111,9 @@ func RecoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
+				if rec == http.ErrAbortHandler {
+					panic(rec)
+				}
 				traceID := GetRequestID(r.Context())
 				stack := string(debug.Stack())
 				slog.Error("panic recovered",
@@ -203,8 +223,16 @@ func MetricsMiddleware(reg *metrics.Registry) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 
 			duration := time.Since(start)
-			reg.IncRequests(r.Method, r.URL.Path, wrapped.statusCode)
-			reg.ObserveDuration(r.Method, r.URL.Path, duration.Seconds())
+			path := r.URL.Path
+			if r.Pattern != "" {
+				path = r.Pattern
+				if idx := strings.Index(path, " "); idx != -1 {
+					path = path[idx+1:]
+				}
+			}
+
+			reg.IncRequests(r.Method, path, wrapped.statusCode)
+			reg.ObserveDuration(r.Method, path, duration.Seconds())
 		})
 	}
 }
@@ -219,6 +247,12 @@ func AuthMiddleware(cfg *config.SecurityConfig) func(http.Handler) http.Handler 
 				return
 			}
 
+			// Public operational endpoints bypass auth
+			if isPublicEndpoint(r.URL.Path) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			// Read key from Authorization: Bearer <key> or X-API-Key: <key>
 			apiKey := extractAPIKey(r)
 			if apiKey == "" {
@@ -226,10 +260,10 @@ func AuthMiddleware(cfg *config.SecurityConfig) func(http.Handler) http.Handler 
 				return
 			}
 
-			// Match key against configured API keys
+			// Match key against configured API keys using constant-time comparison
 			var matchedKey *config.APIKeyConfig
 			for i := range cfg.APIKeys {
-				if cfg.APIKeys[i].Key == apiKey {
+				if subtle.ConstantTimeCompare([]byte(cfg.APIKeys[i].Key), []byte(apiKey)) == 1 {
 					matchedKey = &cfg.APIKeys[i]
 					break
 				}
@@ -250,7 +284,7 @@ func AuthMiddleware(cfg *config.SecurityConfig) func(http.Handler) http.Handler 
 			// Check agent RBAC if agent_id is present in query or path
 			agentID := extractAgentID(r)
 			if agentID != "" {
-				if !isAgentAllowed(agentID, matchedKey.AllowedAgents) {
+				if !creds.Allows(agentID) {
 					writeA2AError(w, "FORBIDDEN", fmt.Sprintf("Access to agent '%s' is forbidden", agentID), agentID, http.StatusForbidden)
 					return
 				}
@@ -259,6 +293,10 @@ func AuthMiddleware(cfg *config.SecurityConfig) func(http.Handler) http.Handler 
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+func isPublicEndpoint(p string) bool {
+	return p == "/healthz" || p == "/readyz" || p == "/metrics"
 }
 
 func extractAPIKey(r *http.Request) string {
@@ -302,15 +340,6 @@ func extractAgentID(r *http.Request) string {
 	}
 
 	return ""
-}
-
-func isAgentAllowed(agentID string, allowedAgents []string) bool {
-	for _, a := range allowedAgents {
-		if a == "*" || a == agentID {
-			return true
-		}
-	}
-	return false
 }
 
 func writeA2AError(w http.ResponseWriter, code, message, agentID string, status int) {

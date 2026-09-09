@@ -67,6 +67,16 @@ func (d *Dispatcher) SetBackoffPolicy(b *BackoffPolicy) {
 	d.backoff = b
 }
 
+// Registry returns the adapter registry used by the dispatcher.
+func (d *Dispatcher) Registry() *adapter.Registry {
+	return d.reg
+}
+
+// Config returns the configuration used by the dispatcher.
+func (d *Dispatcher) Config() *config.Config {
+	return d.cfg
+}
+
 // GetAgent returns the AgentConfig for the specified agent ID or an error if not found.
 func (d *Dispatcher) GetAgent(agentID string) (*config.AgentConfig, error) {
 	if d.cfg != nil {

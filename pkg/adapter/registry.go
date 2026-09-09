@@ -31,3 +31,15 @@ func (r *Registry) Get(adapterType string) (Adapter, error) {
 	}
 	return a, nil
 }
+
+// Count returns the number of registered adapters.
+func (r *Registry) Count() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.adapters)
+}
+
+// Len returns the number of registered adapters.
+func (r *Registry) Len() int {
+	return r.Count()
+}

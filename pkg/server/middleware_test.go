@@ -447,3 +447,113 @@ func TestMetricsEndpoint(t *testing.T) {
 		t.Errorf("expected a2a_active_streams 0 after dec, got:\n%s", body2)
 	}
 }
+
+func TestClientCredentials_Allows(t *testing.T) {
+	creds := ClientCredentials{
+		ClientID:      "test-client",
+		AllowedAgents: []string{"agent-1", "agent-2"},
+	}
+
+	if !creds.Allows("agent-1") {
+		t.Errorf("expected agent-1 to be allowed")
+	}
+	if !creds.Allows("agent-2") {
+		t.Errorf("expected agent-2 to be allowed")
+	}
+	if creds.Allows("agent-3") {
+		t.Errorf("expected agent-3 to be disallowed")
+	}
+
+	wildcardCreds := ClientCredentials{
+		ClientID:      "wildcard-client",
+		AllowedAgents: []string{"*"},
+	}
+	if !wildcardCreds.Allows("any-agent") {
+		t.Errorf("expected any-agent to be allowed with wildcard")
+	}
+
+	if !IsAgentAllowed([]string{"bot-a"}, "bot-a") {
+		t.Errorf("expected IsAgentAllowed to return true")
+	}
+	if IsAgentAllowed([]string{"bot-a"}, "bot-b") {
+		t.Errorf("expected IsAgentAllowed to return false")
+	}
+}
+
+func TestRecoveryMiddleware_ErrAbortHandler(t *testing.T) {
+	abortingHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic(http.ErrAbortHandler)
+	})
+
+	handler := RecoveryMiddleware(abortingHandler)
+	req := httptest.NewRequest("GET", "/test", nil)
+	rec := httptest.NewRecorder()
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("expected panic with ErrAbortHandler, got nil")
+		}
+		if r != http.ErrAbortHandler {
+			t.Fatalf("expected ErrAbortHandler, got %v", r)
+		}
+	}()
+
+	handler.ServeHTTP(rec, req)
+}
+
+func TestMetricsMiddleware_PatternNormalization(t *testing.T) {
+	reg := metrics.NewRegistry()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /a2a/v1/agents/{id}", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	mw := MetricsMiddleware(reg)(mux)
+	req := httptest.NewRequest("GET", "/a2a/v1/agents/agent-xyz", nil)
+	rec := httptest.NewRecorder()
+	mw.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	output := reg.Gather()
+	if !strings.Contains(output, `path="/a2a/v1/agents/{id}"`) {
+		t.Errorf("expected metric path to be normalized pattern /a2a/v1/agents/{id}, got:\n%s", output)
+	}
+	if strings.Contains(output, `agent-xyz`) {
+		t.Errorf("expected metric not to contain dynamic ID agent-xyz, got:\n%s", output)
+	}
+}
+
+func TestAuthMiddleware_PublicEndpointsBypass(t *testing.T) {
+	cfg := &config.SecurityConfig{
+		Enabled: true,
+		APIKeys: []config.APIKeyConfig{
+			{Key: "secret", ClientID: "c1", AllowedAgents: []string{"*"}},
+		},
+	}
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := AuthMiddleware(cfg)(next)
+
+	for _, p := range []string{"/healthz", "/readyz", "/metrics"} {
+		called = false
+		req := httptest.NewRequest("GET", p, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("path %s expected 200 bypass, got %d", p, rec.Code)
+		}
+		if !called {
+			t.Errorf("path %s handler was not called", p)
+		}
+	}
+}
