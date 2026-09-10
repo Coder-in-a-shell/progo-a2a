@@ -70,6 +70,7 @@ type PostgresTaskStore struct {
 	pool         *pgxpool.Pool
 	closed       atomic.Bool
 	redactTokens []string
+	ownsPool     bool
 }
 
 // NewPostgresTaskStore creates a new PostgreSQL-backed task store.
@@ -127,6 +128,7 @@ func NewPostgresTaskStore(ctx context.Context, dsn string, options PostgresOptio
 	return &PostgresTaskStore{
 		pool:         pool,
 		redactTokens: tokens,
+		ownsPool:     true,
 	}, nil
 }
 
@@ -258,7 +260,7 @@ func (s *PostgresTaskStore) Ping(ctx context.Context) error {
 // Close closes the underlying connection pool. It is idempotent and safe for concurrent calls.
 func (s *PostgresTaskStore) Close() {
 	if s.closed.CompareAndSwap(false, true) {
-		if s.pool != nil {
+		if s.ownsPool && s.pool != nil {
 			s.pool.Close()
 		}
 	}

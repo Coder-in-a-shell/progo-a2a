@@ -30,13 +30,14 @@ sequenceDiagram
 
 | Path | Responsibility |
 |---|---|
-| `cmd/proxy` | CLI flags, config loading, adapter registration, server lifecycle, signal handling |
+| `cmd/proxy` | CLI flags, config loading, adapter registration, server and worker lifecycle, signal handling |
 | `pkg/config` | YAML model, `${ENV_VAR}` expansion, defaults, validation, fallback-cycle detection |
-| `pkg/model` | Agent, task, artifact, event, and error types |
+| `pkg/model` | Agent, task, artifact, event, durable job, and error types |
 | `pkg/adapter` | Built-in translations and adapter registry |
 | `pkg/dispatcher` | Agent selection, retry/backoff, timeout, fallback, pooled HTTP transport |
+| `pkg/worker` | Durable background worker engine, distributed leasing, scheduled renewal, panic recovery, graceful drain |
 | `pkg/server` | Routes, handlers, middleware, task storage integration, health/readiness |
-| `pkg/storage` | TaskStore interface, in-memory FIFO cache, and PostgreSQL durable backend with migrations |
+| `pkg/storage` | TaskStore and JobRepository interfaces, in-memory cache, PostgreSQL durable backend, shared pool bundle, and migrations |
 | `pkg/stream` | Thread-safe SSE writer |
 | `pkg/metrics` | In-process Prometheus text collector |
 | `tests` | End-to-end and benchmark suites with local mock agents |
@@ -54,14 +55,32 @@ Requests pass through:
 
 The response includes `X-Request-ID`. Logs use the field `trace_id` and include method, path, status, and integer duration in milliseconds.
 
-## Server lifecycle
+## Server and worker lifecycle
 
-The server uses configured read, write, and idle timeouts. SSE handlers clear the per-response write deadline so a long stream is not cut off by `write_timeout_seconds`. On `SIGINT` or `SIGTERM`, the process requests graceful shutdown with a fixed 15-second deadline.
+The HTTP server uses configured read, write, and idle timeouts. SSE handlers clear the per-response write deadline so a long stream is not cut off by `write_timeout_seconds`.
+
+The background worker engine (`pkg/worker`) operates on at-least-once delivery semantics:
+1. Claims ready jobs with database time using `AcquireLeases`, bounded by available concurrency capacity.
+2. Transitions claimed jobs to `running` with fencing tokens before execution.
+3. Extends leases periodically on schedule via `RenewLease`, checking for cancellation requests.
+4. Executes jobs through `JobExecutor`, decoding payloads, enforcing routing, intercepting panics, and making exactly one downstream attempt per lease. Durable retries and backoff are controlled only by the job ledger.
+5. Persists sanitized terminal outcomes (`CompleteJob`, `FailJob`, or `AcknowledgeCancellation`).
+6. Reclaims expired leases periodically via `ReclaimExpiredLeases`.
+
+On `SIGINT` or `SIGTERM`, graceful shutdown initiates:
+- `api` role requests graceful HTTP server shutdown with a 15-second deadline.
+- `worker` role stops acquiring new leases, allows active jobs to drain while leases continue renewing, and cancels execution contexts only after reaching `drain_timeout_seconds`.
+- `all` role runs both server and worker concurrently, sharing a single PostgreSQL pool bundle (`PostgresBundle`), and shuts both down gracefully on signal.
 
 ## State and scaling
 
-Routing/configuration is read-only after startup. The only request-derived application state is completed synchronous task storage and in-process metrics.
+Routing and adapter configurations are read-only after startup.
 
-When configured with the default `memory` backend, task results are stored in a process-local, bounded FIFO cache (default 10,000 entries) that resets on restart and is not shared across replicas. When configured with the `postgres` backend, completed synchronous task results are persisted to a shared PostgreSQL database, enabling durable task lookup across horizontal replicas and process restarts. Metrics remain in-process and process-local.
+Task responses from synchronous invocations are stored in `TaskStore` (`memory` FIFO ring cache or `postgres` table `task_results`). Durable background jobs are managed through `JobRepository` (`postgres` table `durable_jobs`) with monotonically increasing lease fencing tokens.
 
-Be precise about storage boundaries: PostgreSQL makes completed synchronous task lookup durable and shared across replicas; it does not create asynchronous background jobs, persist streaming events, add cancellation, provide automatic retention, or implement official A2A 1.0. Horizontal replicas work seamlessly for stateless invocation and durable task retrieval, while Prometheus metrics should be scraped per replica. See the [PostgreSQL storage guide](../deployment/postgresql.md) for full deployment and operational details.
+When running horizontally with multiple replicas:
+- `api` replicas handle stateless HTTP invocation and durable task retrieval.
+- `worker` replicas concurrently process durable background jobs using database-level skip-locked lease acquisition and optimistic fencing.
+- In `all` role, each instance runs both API endpoints and background workers over a unified, shared connection pool.
+
+See the [PostgreSQL storage guide](../deployment/postgresql.md) for full deployment and operational details.

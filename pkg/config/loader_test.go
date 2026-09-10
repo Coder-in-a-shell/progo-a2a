@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/model"
 )
 
 func TestLoadConfigWithEnvExpansion(t *testing.T) {
@@ -1317,16 +1319,16 @@ agents:
 	})
 }
 
-func TestStorageConfig_Validation(t *testing.T) {
-	baseValidConfig := func() Config {
-		return Config{
-			Server: ServerConfig{Port: 8080},
-			Agents: []AgentConfig{
-				{ID: "agent-1", Type: "openai", Endpoint: "http://localhost:8000"},
-			},
-		}
+func baseValidConfig() Config {
+	return Config{
+		Server: ServerConfig{Port: 8080},
+		Agents: []AgentConfig{
+			{ID: "agent-1", Type: "openai", Endpoint: "http://localhost:8000"},
+		},
 	}
+}
 
+func TestStorageConfig_Validation(t *testing.T) {
 	validPGConfig := func() Config {
 		c := baseValidConfig()
 		c.Storage = StorageConfig{
@@ -1643,5 +1645,331 @@ func TestStorageConfig_DSNNonLeakageInValidationError(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), secretDSN) {
 		t.Errorf("validation error leaked full DSN: %s", err.Error())
+	}
+}
+
+func TestRuntimeRoleAndWorkerConfig_DefaultsAndValidation(t *testing.T) {
+	validPG := func() Config {
+		c := baseValidConfig()
+		c.Storage.Backend = "postgres"
+		c.Storage.Postgres = PostgresStorageConfig{
+			DSN:                          "postgres://user:pass@localhost:5432/db",
+			MaxConnections:               20,
+			MinConnections:               2,
+			MaxConnectionLifetimeSeconds: 1800,
+			MaxConnectionIdleTimeSeconds: 300,
+			HealthCheckPeriodSeconds:     30,
+			ConnectTimeoutSeconds:        5,
+		}
+		c.Worker = WorkerConfig{
+			WorkerID:                 "worker-test",
+			Concurrency:              10,
+			BatchSize:                5,
+			PollIntervalMilliseconds: 1000,
+			LeaseDurationSeconds:     30,
+			RenewalIntervalSeconds:   10,
+			RetryBackoffSeconds:      15,
+			DrainTimeoutSeconds:      30,
+		}
+		return c
+	}
+
+	tests := []struct {
+		name        string
+		modify      func(c *Config)
+		errContains string
+		expectValid bool
+	}{
+		{
+			name: "default role is valid with memory storage",
+			modify: func(c *Config) {
+				c.Role = ""
+			},
+			expectValid: true,
+		},
+		{
+			name: "explicit api role is valid with memory storage",
+			modify: func(c *Config) {
+				c.Role = "api"
+			},
+			expectValid: true,
+		},
+		{
+			name: "explicit worker role valid with postgres storage",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "worker"
+			},
+			expectValid: true,
+		},
+		{
+			name: "explicit all role valid with postgres storage",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "all"
+			},
+			expectValid: true,
+		},
+		{
+			name: "invalid role rejected",
+			modify: func(c *Config) {
+				c.Role = "invalid-role"
+			},
+			errContains: "invalid runtime role \"invalid-role\": must be one of api, worker, all",
+		},
+		{
+			name: "worker role with memory storage rejected",
+			modify: func(c *Config) {
+				c.Role = "worker"
+				c.Storage.Backend = "memory"
+			},
+			errContains: "runtime role \"worker\" requires postgres storage backend",
+		},
+		{
+			name: "all role with memory storage rejected",
+			modify: func(c *Config) {
+				c.Role = "all"
+				c.Storage.Backend = "memory"
+			},
+			errContains: "runtime role \"all\" requires postgres storage backend",
+		},
+		{
+			name: "worker worker_id whitespace-only rejected",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "worker"
+				c.Worker.WorkerID = "   \t\n  "
+			},
+			errContains: "worker worker_id cannot be whitespace-only",
+		},
+		{
+			name: "worker worker_id exceeds max length",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "worker"
+				c.Worker.WorkerID = strings.Repeat("x", 257)
+			},
+			errContains: "worker worker_id exceeds maximum length",
+		},
+		{
+			name: "worker concurrency zero rejected",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "worker"
+				c.Worker.Concurrency = 0
+			},
+			errContains: "worker concurrency must be between 1 and 1000",
+		},
+		{
+			name: "worker concurrency negative rejected",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "worker"
+				c.Worker.Concurrency = -1
+			},
+			errContains: "worker concurrency must be between 1 and 1000",
+		},
+		{
+			name: "worker concurrency above 1000 rejected",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "worker"
+				c.Worker.Concurrency = 1001
+			},
+			errContains: "worker concurrency must be between 1 and 1000",
+		},
+		{
+			name: "worker batch_size zero rejected",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "worker"
+				c.Worker.BatchSize = 0
+			},
+			errContains: "worker batch_size must be positive",
+		},
+		{
+			name: "worker batch_size exceeds concurrency rejected",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "worker"
+				c.Worker.Concurrency = 5
+				c.Worker.BatchSize = 6
+			},
+			errContains: "must not exceed concurrency",
+		},
+		{
+			name: "worker poll_interval non-positive rejected",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "worker"
+				c.Worker.PollIntervalMilliseconds = 0
+			},
+			errContains: "worker poll_interval_milliseconds must be positive",
+		},
+		{
+			name: "worker poll_interval exceeds max allowed rejected",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "worker"
+				c.Worker.PollIntervalMilliseconds = MaxWorkerPollIntervalMilliseconds + 1
+			},
+			errContains: "worker poll_interval_milliseconds (600001) exceeds max allowed",
+		},
+		{
+			name: "worker lease_duration below minimum rejected",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "worker"
+				c.Worker.LeaseDurationSeconds = 0
+			},
+			errContains: "worker lease_duration_seconds must be at least 2",
+		},
+		{
+			name: "worker lease_duration exceeds 24h rejected",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "worker"
+				c.Worker.LeaseDurationSeconds = 86401
+			},
+			errContains: "worker lease_duration_seconds (86401) exceeds max allowed",
+		},
+		{
+			name: "worker renewal_interval non-positive rejected",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "worker"
+				c.Worker.RenewalIntervalSeconds = 0
+			},
+			errContains: "worker renewal_interval_seconds must be positive",
+		},
+		{
+			name: "worker renewal_interval more than half lease_duration rejected",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "worker"
+				c.Worker.LeaseDurationSeconds = 30
+				c.Worker.RenewalIntervalSeconds = 16
+			},
+			errContains: "must be at most half of lease_duration_seconds",
+		},
+		{
+			name: "worker renewal_interval exactly half lease_duration accepted",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "worker"
+				c.Worker.LeaseDurationSeconds = 30
+				c.Worker.RenewalIntervalSeconds = 15
+			},
+			expectValid: true,
+		},
+		{
+			name: "worker retry_backoff non-positive rejected",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "worker"
+				c.Worker.RetryBackoffSeconds = 0
+			},
+			errContains: "worker retry_backoff_seconds must be positive",
+		},
+		{
+			name: "worker retry_backoff exceeds max allowed rejected",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "worker"
+				c.Worker.RetryBackoffSeconds = int(model.MaxRetryBackoff.Seconds()) + 1
+			},
+			errContains: "worker retry_backoff_seconds (604801) exceeds max allowed",
+		},
+		{
+			name: "worker drain_timeout non-positive rejected",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "worker"
+				c.Worker.DrainTimeoutSeconds = 0
+			},
+			errContains: "worker drain_timeout_seconds must be positive",
+		},
+		{
+			name: "worker drain_timeout exceeds max allowed rejected",
+			modify: func(c *Config) {
+				*c = validPG()
+				c.Role = "worker"
+				c.Worker.DrainTimeoutSeconds = MaxWorkerDrainTimeoutSeconds + 1
+			},
+			errContains: "worker drain_timeout_seconds (3601) exceeds max allowed",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			tc.modify(&cfg)
+			err := Validate(&cfg)
+
+			if tc.expectValid {
+				if err != nil {
+					t.Fatalf("expected valid config, got error: %v", err)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.errContains)
+			}
+			if !strings.Contains(err.Error(), tc.errContains) {
+				t.Errorf("expected error containing %q, got %q", tc.errContains, err.Error())
+			}
+		})
+	}
+}
+
+func TestDirectValidateDoesNotMutateConfig(t *testing.T) {
+	cfg := baseValidConfig()
+	cfg.Role = "" // empty hand-built role
+
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("Validate failed: %v", err)
+	}
+
+	// Must NOT mutate hand-built config
+	if cfg.Role != "" {
+		t.Fatalf("expected cfg.Role to remain empty string, got %q", cfg.Role)
+	}
+}
+
+func TestShippedExampleConfigsCompatibility(t *testing.T) {
+	t.Setenv("STORAGE_BACKEND", "postgres")
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/testdb")
+	t.Setenv("MIGRATE_ON_START", "false")
+	t.Setenv("ADMIN_API_KEY", "admin-key-12345")
+	t.Setenv("ANALYST_API_KEY", "analyst-key-67890")
+	t.Setenv("LANGGRAPH_API_KEY", "langgraph-key")
+	t.Setenv("CREWAI_API_TOKEN", "crewai-token")
+	t.Setenv("AUTOGEN_API_KEY", "autogen-key")
+	t.Setenv("OPENAI_API_KEY", "openai-key")
+	t.Setenv("ENTERPRISE_AUTH_TOKEN", "enterprise-token")
+
+	// 1. config/progo-a2a.example.yaml
+	cfg1, err := Load("../../config/progo-a2a.example.yaml")
+	if err != nil {
+		t.Fatalf("failed to load config/progo-a2a.example.yaml: %v", err)
+	}
+	if cfg1.Role != "api" {
+		t.Errorf("expected default role 'api', got %q", cfg1.Role)
+	}
+	if cfg1.Worker.Concurrency != 10 {
+		t.Errorf("expected default concurrency 10, got %d", cfg1.Worker.Concurrency)
+	}
+
+	// 2. config/a2a-proxy.example.yaml
+	cfg2, err := Load("../../config/a2a-proxy.example.yaml")
+	if err != nil {
+		t.Fatalf("failed to load config/a2a-proxy.example.yaml: %v", err)
+	}
+	if cfg2.Role != "api" {
+		t.Errorf("expected default role 'api', got %q", cfg2.Role)
+	}
+	if cfg2.Storage.Backend != "memory" {
+		t.Errorf("expected storage backend memory, got %q", cfg2.Storage.Backend)
 	}
 }

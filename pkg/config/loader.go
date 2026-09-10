@@ -40,6 +40,31 @@ func Load(path string) (*Config, error) {
 }
 
 func applyDefaults(cfg *Config) {
+	if cfg.Role == "" {
+		cfg.Role = "api"
+	}
+	if cfg.Worker.Concurrency == 0 {
+		cfg.Worker.Concurrency = 10
+	}
+	if cfg.Worker.BatchSize == 0 {
+		cfg.Worker.BatchSize = 5
+	}
+	if cfg.Worker.PollIntervalMilliseconds == 0 {
+		cfg.Worker.PollIntervalMilliseconds = 1000
+	}
+	if cfg.Worker.LeaseDurationSeconds == 0 {
+		cfg.Worker.LeaseDurationSeconds = 30
+	}
+	if cfg.Worker.RenewalIntervalSeconds == 0 {
+		cfg.Worker.RenewalIntervalSeconds = 10
+	}
+	if cfg.Worker.RetryBackoffSeconds == 0 {
+		cfg.Worker.RetryBackoffSeconds = 15
+	}
+	if cfg.Worker.DrainTimeoutSeconds == 0 {
+		cfg.Worker.DrainTimeoutSeconds = 30
+	}
+
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = 8080
 	}

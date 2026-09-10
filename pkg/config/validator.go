@@ -4,10 +4,29 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/model"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/storage"
 )
 
 func Validate(cfg *Config) error {
-	if cfg.Server.Port <= 0 || cfg.Server.Port > 65535 {
+	role := cfg.Role
+	if role == "" {
+		role = "api"
+	}
+	switch role {
+	case "api", "worker", "all":
+		// valid
+	default:
+		return fmt.Errorf("invalid runtime role %q: must be one of api, worker, all", cfg.Role)
+	}
+
+	if role == "api" || role == "all" {
+		if cfg.Server.Port <= 0 || cfg.Server.Port > 65535 {
+			return fmt.Errorf("server port must be between 1 and 65535")
+		}
+	} else if cfg.Server.Port < 0 || cfg.Server.Port > 65535 {
 		return fmt.Errorf("server port must be between 1 and 65535")
 	}
 
@@ -218,6 +237,63 @@ func Validate(cfg *Config) error {
 		}
 	default:
 		return fmt.Errorf("unknown storage backend %q: must be one of memory, postgres", cfg.Storage.Backend)
+	}
+
+	if role == "worker" || role == "all" {
+		if backend != "postgres" {
+			return fmt.Errorf("runtime role %q requires postgres storage backend, got %q", role, backend)
+		}
+	}
+
+	if role == "worker" || role == "all" || cfg.Worker != (WorkerConfig{}) {
+		if cfg.Worker.WorkerID != "" && strings.TrimSpace(cfg.Worker.WorkerID) == "" {
+			return fmt.Errorf("worker worker_id cannot be whitespace-only")
+		}
+		if utf8.RuneCountInString(cfg.Worker.WorkerID) > model.MaxLeaseOwnerLength {
+			return fmt.Errorf("worker worker_id exceeds maximum length of %d", model.MaxLeaseOwnerLength)
+		}
+		if cfg.Worker.Concurrency < 1 || cfg.Worker.Concurrency > 1000 {
+			return fmt.Errorf("worker concurrency must be between 1 and 1000, got %d", cfg.Worker.Concurrency)
+		}
+		if cfg.Worker.BatchSize < 1 {
+			return fmt.Errorf("worker batch_size must be positive, got %d", cfg.Worker.BatchSize)
+		}
+		if cfg.Worker.BatchSize > cfg.Worker.Concurrency {
+			return fmt.Errorf("worker batch_size (%d) must not exceed concurrency (%d)", cfg.Worker.BatchSize, cfg.Worker.Concurrency)
+		}
+		if cfg.Worker.BatchSize > storage.MaxJobBatchSize {
+			return fmt.Errorf("worker batch_size (%d) must not exceed max allowed batch size (%d)", cfg.Worker.BatchSize, storage.MaxJobBatchSize)
+		}
+		if cfg.Worker.PollIntervalMilliseconds <= 0 {
+			return fmt.Errorf("worker poll_interval_milliseconds must be positive, got %d", cfg.Worker.PollIntervalMilliseconds)
+		}
+		if cfg.Worker.PollIntervalMilliseconds > MaxWorkerPollIntervalMilliseconds {
+			return fmt.Errorf("worker poll_interval_milliseconds (%d) exceeds max allowed (%d)", cfg.Worker.PollIntervalMilliseconds, MaxWorkerPollIntervalMilliseconds)
+		}
+		if cfg.Worker.LeaseDurationSeconds < 2 {
+			return fmt.Errorf("worker lease_duration_seconds must be at least 2, got %d", cfg.Worker.LeaseDurationSeconds)
+		}
+		if cfg.Worker.LeaseDurationSeconds > int(storage.MaxJobLeaseDuration.Seconds()) {
+			return fmt.Errorf("worker lease_duration_seconds (%d) exceeds max allowed (%d)", cfg.Worker.LeaseDurationSeconds, int(storage.MaxJobLeaseDuration.Seconds()))
+		}
+		if cfg.Worker.RenewalIntervalSeconds <= 0 {
+			return fmt.Errorf("worker renewal_interval_seconds must be positive, got %d", cfg.Worker.RenewalIntervalSeconds)
+		}
+		if cfg.Worker.RenewalIntervalSeconds > cfg.Worker.LeaseDurationSeconds/2 {
+			return fmt.Errorf("worker renewal_interval_seconds (%d) must be at most half of lease_duration_seconds (%d)", cfg.Worker.RenewalIntervalSeconds, cfg.Worker.LeaseDurationSeconds)
+		}
+		if cfg.Worker.RetryBackoffSeconds <= 0 {
+			return fmt.Errorf("worker retry_backoff_seconds must be positive, got %d", cfg.Worker.RetryBackoffSeconds)
+		}
+		if cfg.Worker.RetryBackoffSeconds > int(model.MaxRetryBackoff.Seconds()) {
+			return fmt.Errorf("worker retry_backoff_seconds (%d) exceeds max allowed (%d)", cfg.Worker.RetryBackoffSeconds, int(model.MaxRetryBackoff.Seconds()))
+		}
+		if cfg.Worker.DrainTimeoutSeconds <= 0 {
+			return fmt.Errorf("worker drain_timeout_seconds must be positive, got %d", cfg.Worker.DrainTimeoutSeconds)
+		}
+		if cfg.Worker.DrainTimeoutSeconds > MaxWorkerDrainTimeoutSeconds {
+			return fmt.Errorf("worker drain_timeout_seconds (%d) exceeds max allowed (%d)", cfg.Worker.DrainTimeoutSeconds, MaxWorkerDrainTimeoutSeconds)
+		}
 	}
 
 	return nil

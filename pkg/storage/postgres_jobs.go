@@ -26,6 +26,7 @@ type PostgresJobRepository struct {
 	pool         *pgxpool.Pool
 	closed       atomic.Bool
 	redactTokens []string
+	ownsPool     bool
 }
 
 // NewPostgresJobRepository creates a new PostgreSQL-backed durable job repository.
@@ -80,6 +81,7 @@ func NewPostgresJobRepository(ctx context.Context, dsn string, options PostgresO
 	return &PostgresJobRepository{
 		pool:         pool,
 		redactTokens: tokens,
+		ownsPool:     true,
 	}, nil
 }
 
@@ -115,7 +117,7 @@ func (r *PostgresJobRepository) Ping(ctx context.Context) error {
 // Close closes the underlying connection pool idempotently.
 func (r *PostgresJobRepository) Close() {
 	if r.closed.CompareAndSwap(false, true) {
-		if r.pool != nil {
+		if r.ownsPool && r.pool != nil {
 			r.pool.Close()
 		}
 	}
@@ -574,6 +576,45 @@ RETURNING state;
 			return fmt.Errorf("postgres job repository: cancel: %w", ErrJobNotFound)
 		}
 		return fmt.Errorf("postgres job repository: cancel: %w", r.redactErr(err))
+	}
+
+	return nil
+}
+
+// AcknowledgeCancellation transitions a leased or running job with cancellation intent to canceled.
+// Fenced by tenant, job ID, lease owner, and lease token.
+func (r *PostgresJobRepository) AcknowledgeCancellation(ctx context.Context, fence model.LeaseFence) error {
+	if r.closed.Load() {
+		return fmt.Errorf("postgres job repository: acknowledge cancellation: %w", ErrStoreClosed)
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("postgres job repository: acknowledge cancellation: %w", err)
+	}
+	if err := fence.Validate(); err != nil {
+		return fmt.Errorf("postgres job repository: acknowledge cancellation: %w", err)
+	}
+
+	const ackCancelSQL = `
+UPDATE durable_jobs
+SET state = 'canceled',
+    lease_owner = NULL,
+    lease_expires_at = NULL,
+    updated_at = NOW()
+WHERE tenant_id = $1
+  AND id = $2
+  AND lease_owner = $3
+  AND lease_token = $4
+  AND state IN ('leased', 'running')
+  AND cancel_requested_at IS NOT NULL
+  AND lease_expires_at > NOW();
+`
+	tag, err := r.pool.Exec(ctx, ackCancelSQL, fence.TenantID, fence.JobID, fence.LeaseOwner, fence.LeaseToken)
+	if err != nil {
+		return fmt.Errorf("postgres job repository: acknowledge cancellation: %w", r.redactErr(err))
+	}
+
+	if tag.RowsAffected() == 0 {
+		return r.handleLeaseMutationMiss(ctx, fence.TenantID, fence.JobID, "acknowledge cancellation", false)
 	}
 
 	return nil

@@ -19,6 +19,7 @@ ProGoA2A translates a common task request into payloads for LangGraph, CrewAI, A
 - Synchronous JSON and streaming SSE routes.
 - Inbound bearer/`X-API-Key` authentication with per-agent allowlists.
 - Pluggable task storage: bounded in-memory cache (default 10,000 entries) or durable PostgreSQL storage (CI-tested with PostgreSQL 17).
+- PostgreSQL-backed durable job ledger and bounded at-least-once worker runtime with leases, fencing, renewal, cancellation acknowledgement, retry scheduling, crash recovery, and graceful drain.
 - Request IDs, structured logs, health/readiness routes, and in-process metrics.
 - Race-tested end-to-end suite and local microbenchmarks.
 
@@ -111,6 +112,12 @@ curl -N -sS http://localhost:8080/a2a/v1/tasks/stream \
 | `POST` | `/api/v1/stream/{agent_id}` | Direct streaming invocation |
 | `GET` | `/healthz`, `/readyz`, `/metrics` | Public operational routes |
 
+## Runtime roles
+
+The binary supports three roles selected by top-level configuration or `-role`: `api` (the default HTTP server), `worker` (durable background execution), and `all` (both components sharing one PostgreSQL pool). The `worker` and `all` roles require `storage.backend: postgres`.
+
+Each durable lease performs exactly one downstream invocation; retry attempts and backoff are controlled by the PostgreSQL job ledger. The current release exposes the durable job producer as the Go `JobRepository` interface. Public HTTP endpoints for job submission, status, and cancellation are not available yet.
+
 ## Docker
 
 The repository builds an image locally; no official registry image or release binary is published yet. The default Docker Compose stack includes PostgreSQL 17 Alpine with health checks:
@@ -150,7 +157,7 @@ python3 -m venv .venv
 
 ## Production boundaries
 
-Before production use, review the [production checklist](https://coder-in-a-shell.github.io/progo-a2a/deployment/production-checklist/). Important current limits include process-local metrics (task storage supports in-memory or PostgreSQL, but PostgreSQL does not add async jobs, stream persistence, cancellation, or automatic retention), no built-in TLS/rate limiting/circuit breaker, no stream heartbeats or resume support, and readiness that does not probe upstreams.
+Before production use, review the [production checklist](https://coder-in-a-shell.github.io/progo-a2a/deployment/production-checklist/). Important current limits include process-local metrics, no public durable-job submission/status/cancellation API, no streaming-event persistence or automatic retention, no built-in TLS/rate limiting/circuit breaker, no stream heartbeats or resume support, and readiness that does not probe upstreams.
 
 ## Documentation
 
