@@ -1,11 +1,12 @@
 package server
 
 import (
-	"container/list"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -14,78 +15,17 @@ import (
 	"github.com/Coder-in-a-shell/progo-a2a/pkg/dispatcher"
 	"github.com/Coder-in-a-shell/progo-a2a/pkg/metrics"
 	"github.com/Coder-in-a-shell/progo-a2a/pkg/model"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/storage"
 	"github.com/Coder-in-a-shell/progo-a2a/pkg/stream"
 )
 
-const defaultMaxTasks = 10000
-
-type taskStore struct {
-	mu       sync.RWMutex
-	maxTasks int
-	tasks    map[string]*list.Element
-	ll       *list.List
-}
-
-type taskItem struct {
-	id   string
-	resp *model.TaskResponse
-}
-
-func newTaskStore(maxTasks int) *taskStore {
-	if maxTasks <= 0 {
-		maxTasks = defaultMaxTasks
-	}
-	return &taskStore{
-		maxTasks: maxTasks,
-		tasks:    make(map[string]*list.Element),
-		ll:       list.New(),
-	}
-}
-
-func (s *taskStore) Store(id string, resp *model.TaskResponse) {
-	if id == "" || resp == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if elem, ok := s.tasks[id]; ok {
-		elem.Value = taskItem{id: id, resp: resp}
-		s.ll.MoveToBack(elem)
-		return
-	}
-
-	for len(s.tasks) >= s.maxTasks && s.ll.Len() > 0 {
-		front := s.ll.Front()
-		if front == nil {
-			break
-		}
-		item := front.Value.(taskItem)
-		delete(s.tasks, item.id)
-		s.ll.Remove(front)
-	}
-
-	elem := s.ll.PushBack(taskItem{id: id, resp: resp})
-	s.tasks[id] = elem
-}
-
-func (s *taskStore) Load(id string) (*model.TaskResponse, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	elem, ok := s.tasks[id]
-	if !ok {
-		return nil, false
-	}
-	return elem.Value.(taskItem).resp, true
-}
-
 // A2AHandler handles standard Agent-to-Agent (A2A) protocol endpoints.
 type A2AHandler struct {
+	mu              sync.RWMutex
 	cfg             *config.Config
 	disp            *dispatcher.Dispatcher
 	metricsRegistry *metrics.Registry
-	tasks           *taskStore
+	tasks           storage.TaskStore
 }
 
 // NewA2AHandler creates a new A2AHandler.
@@ -98,7 +38,7 @@ func NewA2AHandler(cfg *config.Config, disp *dispatcher.Dispatcher, reg ...*metr
 		cfg:             cfg,
 		disp:            disp,
 		metricsRegistry: m,
-		tasks:           newTaskStore(defaultMaxTasks),
+		tasks:           storage.NewMemoryTaskStore(storage.DefaultMaxTasks),
 	}
 }
 
@@ -109,7 +49,25 @@ func (h *A2AHandler) SetMetricsRegistry(reg *metrics.Registry) {
 
 // SetMaxTasks configures the maximum number of cached task responses.
 func (h *A2AHandler) SetMaxTasks(max int) {
-	h.tasks = newTaskStore(max)
+	h.mu.Lock()
+	h.tasks = storage.NewMemoryTaskStore(max)
+	h.mu.Unlock()
+}
+
+// SetTaskStore configures the task store used by the handler. A nil store is ignored.
+func (h *A2AHandler) SetTaskStore(store storage.TaskStore) {
+	if store == nil {
+		return
+	}
+	h.mu.Lock()
+	h.tasks = store
+	h.mu.Unlock()
+}
+
+func (h *A2AHandler) getTaskStore() storage.TaskStore {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.tasks
 }
 
 func (h *A2AHandler) getMetrics() *metrics.Registry {
@@ -119,11 +77,16 @@ func (h *A2AHandler) getMetrics() *metrics.Registry {
 	return metrics.DefaultRegistry
 }
 
-// StoreTask stores a task response in the in-memory task map.
+// StoreTask stores a task response in the task store.
 func (h *A2AHandler) StoreTask(resp *model.TaskResponse) {
-	if resp != nil && resp.TaskID != "" {
-		h.tasks.Store(resp.TaskID, resp)
+	if resp == nil || resp.TaskID == "" {
+		return
 	}
+	_ = h.getTaskStore().Save(context.Background(), resp)
+}
+
+func (h *A2AHandler) saveTask(ctx context.Context, resp *model.TaskResponse, aliases ...string) error {
+	return h.getTaskStore().Save(ctx, resp, aliases...)
 }
 
 // ListAgents handles GET /a2a/v1/agents, returning all configured agents as model.AgentListResponse.
@@ -238,9 +201,15 @@ func (h *A2AHandler) DispatchTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.StoreTask(resp)
+	var aliases []string
 	if task.ID != "" && resp.TaskID != task.ID {
-		h.tasks.Store(task.ID, resp)
+		aliases = append(aliases, task.ID)
+	}
+
+	if err := h.saveTask(r.Context(), resp, aliases...); err != nil {
+		slog.Error("failed to persist task response", "task_id", resp.TaskID, "error", err)
+		writeA2AError(w, "TASK_STORAGE_UNAVAILABLE", "task storage is temporarily unavailable", task.AgentID, http.StatusServiceUnavailable)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -326,18 +295,25 @@ func (h *A2AHandler) GetTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if val, ok := h.tasks.Load(taskID); ok {
-		if creds, authenticated := GetClientCredentials(r.Context()); authenticated && !creds.Allows(val.AgentID) {
-			writeA2AError(w, "FORBIDDEN", fmt.Sprintf("Access to agent '%s' is forbidden", val.AgentID), val.AgentID, http.StatusForbidden)
+	val, err := h.getTaskStore().Load(r.Context(), taskID)
+	if err != nil {
+		if errors.Is(err, storage.ErrTaskNotFound) {
+			writeA2AError(w, "TASK_NOT_FOUND", fmt.Sprintf("task '%s' not found", taskID), "", http.StatusNotFound)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(val)
+		slog.Error("failed to load task response", "task_id", taskID, "error", err)
+		writeA2AError(w, "TASK_STORAGE_UNAVAILABLE", "task storage is temporarily unavailable", "", http.StatusServiceUnavailable)
 		return
 	}
 
-	writeA2AError(w, "TASK_NOT_FOUND", fmt.Sprintf("task '%s' not found", taskID), "", http.StatusNotFound)
+	if creds, authenticated := GetClientCredentials(r.Context()); authenticated && !creds.Allows(val.AgentID) {
+		writeA2AError(w, "FORBIDDEN", fmt.Sprintf("Access to agent '%s' is forbidden", val.AgentID), val.AgentID, http.StatusForbidden)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(val)
 }
 
 func generateTaskID() string {
