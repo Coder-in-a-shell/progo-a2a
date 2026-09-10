@@ -37,29 +37,33 @@ docker run --rm progo-a2a:local \
 
 ## Docker Compose
 
-The checked-in `docker-compose.yml` builds from the checkout and mounts the example config:
+The checked-in `docker-compose.yml` provides a complete local development environment comprising the ProGoA2A gateway and a PostgreSQL 17 Alpine database service:
 
 ```bash
-docker compose up --build -d
+# Start the stack (builds gateway, starts PostgreSQL and runs migrations)
+make docker-up
+# Or directly with Docker Compose:
+docker compose up -d --build
+
+# View running containers and logs
 docker compose ps
 docker compose logs -f progo-a2a
+
+# Stop the stack safely (preserves the named database volume postgres_data)
+make docker-down
+# Or directly:
+docker compose down
 ```
 
-Before real agent calls, copy and edit the example, then change the Compose volume source to your file:
+The default stack configures:
 
-```yaml
-services:
-  progo-a2a:
-    build: .
-    ports:
-      - "8080:8080"
-    environment:
-      OPENAI_API_KEY: "${OPENAI_API_KEY}"
-    volumes:
-      - ./progo-a2a.yaml:/app/config/progo-a2a.yaml:ro
-```
+- **PostgreSQL 17 Alpine**: Uses named volume `postgres_data` and a `pg_isready` health check. The database port (`5432`) is restricted to the internal Docker network and not published to the host.
+- **Gateway Dependency**: `progo-a2a` depends on database health (`condition: service_healthy`).
+- **Storage & Migrations**: Configured with `STORAGE_BACKEND=postgres`, `DATABASE_URL`, and `MIGRATE_ON_START=true`, which applies embedded migrations on startup using advisory locking.
+- **Credential Placeholders**: Supplies local dummy keys for inbound authentication and all five adapters (`LANGGRAPH_API_KEY`, `CREWAI_API_TOKEN`, `AUTOGEN_API_KEY`, `OPENAI_API_KEY`, `ENTERPRISE_AUTH_TOKEN`).
+- **Overridable Passwords**: Host environment variables or `.env` can override `POSTGRES_PASSWORD` and other settings.
 
-Environment variables are used only where the YAML includes `${NAME}` placeholders. There are no special runtime variables such as `PROGO_PORT` or `PROGO_LOG_LEVEL`; use CLI flags and YAML server settings.
+See the [PostgreSQL storage guide](postgresql.md) for schema details, pool tuning, and production recommendations.
 
 ## Verify
 

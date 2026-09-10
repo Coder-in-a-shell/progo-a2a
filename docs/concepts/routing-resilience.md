@@ -69,6 +69,15 @@ The shared transport is cloned from Go's default transport and configured with:
 
 There is no configurable circuit breaker, rate limiter, bulkhead, or maximum-concurrency policy in the current implementation. Add those at the edge or in the service before relying on them for production isolation.
 
-## Task-result cache
+## Task storage
 
-Successful synchronous dispatches, including translated `FAILED` task responses, are kept in a thread-safe 10,000-entry FIFO cache. It has no TTL, persistence, cross-replica sharing, or public configuration field.
+Successful synchronous dispatches, including translated `FAILED` task responses, are stored using the configured storage backend:
+
+- **In-memory (`backend: memory`)**: A thread-safe, bounded FIFO cache (default 10,000 entries, configurable up to 1,000,000 entries via `storage.memory.max_tasks`). It operates process-locally with no persistence across restarts or sharing across replicas.
+- **PostgreSQL (`backend: postgres`)**: A durable, shared PostgreSQL store (CI-tested with PostgreSQL 17). Lookup keys (canonical task ID and any alias IDs) are upserted atomically in a single statement, preserving `created_at` timestamps on conflict. Completed results can be queried by any proxy replica connecting to the same database.
+
+### Storage failure semantics
+
+When using durable storage, if an upstream agent responds successfully but saving to PostgreSQL fails (for example, due to a connection error or query timeout), the proxy logs the sanitized error and responds to the client with HTTP `503 Service Unavailable` (`TASK_STORAGE_UNAVAILABLE`). This guarantees that callers are notified if a task was not durably recorded. The downstream operation may nevertheless have completed, so callers must not blindly retry non-idempotent work.
+
+Be precise about boundaries: PostgreSQL makes completed synchronous task lookup durable and shared across replicas; it does not create asynchronous background jobs, persist streaming events, add cancellation, provide automatic retention, or implement official A2A 1.0. See the [PostgreSQL storage guide](../deployment/postgresql.md) for full configuration and tuning options.

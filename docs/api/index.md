@@ -4,7 +4,7 @@ ProGoA2A exposes three groups of HTTP routes:
 
 | Surface | Routes | Purpose |
 |---|---|---|
-| A2A-inspired | `/a2a/v1/agents`, `/a2a/v1/tasks`, `/a2a/v1/tasks/stream`, `/a2a/v1/tasks/{task_id}` | Discovery, direct/capability routing, streaming, and in-memory result retrieval |
+| A2A-inspired | `/a2a/v1/agents`, `/a2a/v1/tasks`, `/a2a/v1/tasks/stream`, `/a2a/v1/tasks/{task_id}` | Discovery, direct/capability routing, streaming, and stored result retrieval |
 | Direct REST | `/api/v1/invoke/{agent_id}`, `/api/v1/stream/{agent_id}` | Simple point-to-point invocation |
 | Operations | `/healthz`, `/readyz`, `/metrics` | Liveness, readiness, and Prometheus-format metrics |
 

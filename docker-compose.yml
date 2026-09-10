@@ -1,4 +1,8 @@
-version: '3.8'
+# ==============================================================================
+# Local Development Docker Compose Stack
+# WARNING: All credentials and tokens below are local development placeholders only.
+# Never use these default credentials in production environments.
+# ==============================================================================
 
 services:
   progo-a2a:
@@ -9,16 +13,49 @@ services:
     ports:
       - "8080:8080"
     environment:
+      # Storage configuration (local development defaults)
+      - STORAGE_BACKEND=postgres
+      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres_dev_password}@postgres:5432/${POSTGRES_DB:-progo_a2a}?sslmode=disable
+      - MIGRATE_ON_START=true
+
+      # Inbound API keys (local development defaults)
       - ADMIN_API_KEY=${ADMIN_API_KEY:-admin-local-key}
       - ANALYST_API_KEY=${ANALYST_API_KEY:-analyst-local-key}
-      - LANGGRAPH_API_KEY=${LANGGRAPH_API_KEY:-dummy-key}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-dummy-key}
-      - SUPPORT_TOKEN=${SUPPORT_TOKEN:-dummy-token}
+
+      # Downstream agent credentials (local placeholders for config/progo-a2a.example.yaml)
+      - LANGGRAPH_API_KEY=${LANGGRAPH_API_KEY:-dummy-langgraph-key}
+      - CREWAI_API_TOKEN=${CREWAI_API_TOKEN:-dummy-crewai-token}
+      - AUTOGEN_API_KEY=${AUTOGEN_API_KEY:-dummy-autogen-key}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-dummy-openai-key}
+      - ENTERPRISE_AUTH_TOKEN=${ENTERPRISE_AUTH_TOKEN:-dummy-enterprise-token}
+    depends_on:
+      postgres:
+        condition: service_healthy
     volumes:
       - ./config/progo-a2a.example.yaml:/app/config/progo-a2a.yaml:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/readyz"]
       interval: 10s
       timeout: 3s
       retries: 3
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: progo-postgres
+    restart: unless-stopped
+    environment:
+      # Local development database credentials only (overridable via host environment)
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres_dev_password}
+      - POSTGRES_DB=${POSTGRES_DB:-progo_a2a}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-progo_a2a}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

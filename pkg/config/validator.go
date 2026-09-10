@@ -173,6 +173,53 @@ func Validate(cfg *Config) error {
 		}
 	}
 
+	backend := cfg.Storage.Backend
+	if backend == "" {
+		backend = "memory"
+	}
+
+	switch backend {
+	case "memory":
+		if cfg.Storage.Postgres.DSN != "" {
+			return fmt.Errorf("postgres dsn cannot be configured when storage backend is memory")
+		}
+		postgresSettings := cfg.Storage.Postgres
+		postgresSettings.DSN = ""
+		if postgresSettings != (PostgresStorageConfig{}) {
+			return fmt.Errorf("postgres settings cannot be configured when storage backend is memory")
+		}
+		if cfg.Storage.Memory.MaxTasks < 0 || cfg.Storage.Memory.MaxTasks > 1000000 {
+			return fmt.Errorf("storage memory max_tasks must be between 0 and 1000000, got %d", cfg.Storage.Memory.MaxTasks)
+		}
+	case "postgres":
+		if cfg.Storage.Memory != (MemoryStorageConfig{}) {
+			return fmt.Errorf("memory settings cannot be configured when storage backend is postgres")
+		}
+		if strings.TrimSpace(cfg.Storage.Postgres.DSN) == "" {
+			return fmt.Errorf("storage postgres dsn cannot be empty or whitespace")
+		}
+		if cfg.Storage.Postgres.MaxConnections < 1 || cfg.Storage.Postgres.MaxConnections > 1000 {
+			return fmt.Errorf("storage postgres max_connections must be between 1 and 1000, got %d", cfg.Storage.Postgres.MaxConnections)
+		}
+		if cfg.Storage.Postgres.MinConnections < 0 || cfg.Storage.Postgres.MinConnections > cfg.Storage.Postgres.MaxConnections {
+			return fmt.Errorf("storage postgres min_connections must be between 0 and max_connections (%d), got %d", cfg.Storage.Postgres.MaxConnections, cfg.Storage.Postgres.MinConnections)
+		}
+		if cfg.Storage.Postgres.MaxConnectionLifetimeSeconds <= 0 {
+			return fmt.Errorf("storage postgres max_connection_lifetime_seconds must be positive, got %d", cfg.Storage.Postgres.MaxConnectionLifetimeSeconds)
+		}
+		if cfg.Storage.Postgres.MaxConnectionIdleTimeSeconds <= 0 {
+			return fmt.Errorf("storage postgres max_connection_idle_time_seconds must be positive, got %d", cfg.Storage.Postgres.MaxConnectionIdleTimeSeconds)
+		}
+		if cfg.Storage.Postgres.HealthCheckPeriodSeconds <= 0 {
+			return fmt.Errorf("storage postgres health_check_period_seconds must be positive, got %d", cfg.Storage.Postgres.HealthCheckPeriodSeconds)
+		}
+		if cfg.Storage.Postgres.ConnectTimeoutSeconds <= 0 {
+			return fmt.Errorf("storage postgres connect_timeout_seconds must be positive, got %d", cfg.Storage.Postgres.ConnectTimeoutSeconds)
+		}
+	default:
+		return fmt.Errorf("unknown storage backend %q: must be one of memory, postgres", cfg.Storage.Backend)
+	}
+
 	return nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -97,7 +98,11 @@ func (h *RESTHandler) InvokeAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.a2aHandler != nil {
-		h.a2aHandler.StoreTask(resp)
+		if err := h.a2aHandler.saveTask(r.Context(), resp); err != nil {
+			slog.Error("failed to persist task response", "task_id", resp.TaskID, "error", err)
+			writeA2AError(w, "TASK_STORAGE_UNAVAILABLE", "task storage is temporarily unavailable", agentID, http.StatusServiceUnavailable)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

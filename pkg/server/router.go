@@ -7,6 +7,7 @@ import (
 	"github.com/Coder-in-a-shell/progo-a2a/pkg/config"
 	"github.com/Coder-in-a-shell/progo-a2a/pkg/dispatcher"
 	"github.com/Coder-in-a-shell/progo-a2a/pkg/metrics"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/storage"
 )
 
 // RouterOption allows customizing router behavior.
@@ -15,6 +16,7 @@ type RouterOption func(*routerConfig)
 type routerConfig struct {
 	metricsRegistry *metrics.Registry
 	logger          *slog.Logger
+	taskStore       storage.TaskStore
 }
 
 // WithMetricsRegistry provides a custom metrics registry.
@@ -28,6 +30,15 @@ func WithMetricsRegistry(reg *metrics.Registry) RouterOption {
 func WithLogger(logger *slog.Logger) RouterOption {
 	return func(rc *routerConfig) {
 		rc.logger = logger
+	}
+}
+
+// WithTaskStore provides a custom task store. A nil option is ignored.
+func WithTaskStore(store storage.TaskStore) RouterOption {
+	return func(rc *routerConfig) {
+		if store != nil {
+			rc.taskStore = store
+		}
 	}
 }
 
@@ -49,8 +60,17 @@ func SetupRouter(cfg *config.Config, disp *dispatcher.Dispatcher, opts ...Router
 	mux := http.NewServeMux()
 
 	a2aH := NewA2AHandler(cfg, disp, rc.metricsRegistry)
+	if rc.taskStore != nil {
+		a2aH.SetTaskStore(rc.taskStore)
+	}
 	restH := NewRESTHandler(cfg, disp, a2aH, rc.metricsRegistry)
 	healthH := NewHealthHandler(cfg, disp)
+	if rc.logger != nil {
+		healthH.SetLogger(rc.logger)
+	}
+	if hc, ok := rc.taskStore.(storage.HealthChecker); ok && hc != nil {
+		healthH.SetHealthChecker(hc)
+	}
 
 	// Standard A2A Routes
 	mux.HandleFunc("GET /a2a/v1/agents", a2aH.ListAgents)

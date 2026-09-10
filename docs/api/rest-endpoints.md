@@ -1,6 +1,6 @@
 # Direct REST endpoints
 
-The `/api/v1` surface is the simplest way to invoke a known agent ID. It uses the same dispatcher, adapters, authorization, result schema, retries, fallbacks, and task-result cache as the A2A-inspired synchronous route.
+The `/api/v1` surface is the simplest way to invoke a known agent ID. It uses the same dispatcher, adapters, authorization, result schema, retries, fallbacks, and task storage (in-memory FIFO cache or durable PostgreSQL) as the A2A-inspired synchronous route.
 
 ## `POST /api/v1/invoke/{agent_id}`
 
@@ -43,6 +43,6 @@ Body interpretation matches the synchronous direct route. The response uses the 
 | Invoke a known agent with minimal ceremony | Direct REST |
 | Select by capability | A2A-inspired task route |
 | Discover allowed agents | A2A-inspired agent routes |
-| Retrieve an already completed cached result | A2A-inspired task GET |
+| Retrieve an already completed stored result | A2A-inspired task GET |
 
 Neither surface currently implements asynchronous job submission. The A2A-inspired label describes project concepts and naming, not full official-protocol conformance.

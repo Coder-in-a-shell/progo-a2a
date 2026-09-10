@@ -17,6 +17,11 @@ data:
       read_timeout_seconds: 30
       write_timeout_seconds: 120
       idle_timeout_seconds: 60
+    storage:
+      backend: "postgres"
+      postgres:
+        dsn: "${DATABASE_URL}"
+        migrate_on_start: false
     security:
       enabled: true
       api_keys:
@@ -45,6 +50,7 @@ type: Opaque
 stringData:
   proxy-api-key: replace-me
   openai-api-key: replace-me
+  database-url: "postgres://progo:replace-me@postgres.example.internal:5432/progo?sslmode=verify-full"
 ```
 
 Because interpolation happens before YAML parsing, quoting `${NAME}` references avoids surprises from secret characters. Use an external secret controller rather than committing real values.
@@ -95,6 +101,11 @@ spec:
                 secretKeyRef:
                   name: progo-a2a-secrets
                   key: openai-api-key
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: progo-a2a-secrets
+                  key: database-url
           volumeMounts:
             - name: config
               mountPath: /app/config
@@ -136,11 +147,16 @@ spec:
       targetPort: http
 ```
 
-## Horizontal scaling caveats
+## Horizontal scaling and storage
 
-Invocation is suitable for horizontal replicas, but cached task results and metrics are process-local. A later `GET /a2a/v1/tasks/{id}` can reach another pod and return `404`. Use session affinity only as a temporary workaround; durable shared storage is the correct design if result retrieval matters.
+Stateless request invocation scales horizontally without coordination. For task result retrieval:
 
-Readiness does not test upstream agents, so a ready pod may still return upstream errors.
+- **In-Memory Backend (`memory`)**: Task results are process-local. A subsequent `GET /a2a/v1/tasks/{id}` routed to a different pod returns `404`. Use this backend only if task retrieval is not required by clients or when running a single pod.
+- **PostgreSQL Backend (`postgres`)**: Recommended for multi-replica deployments. All pods connect to a shared PostgreSQL instance (configured via a Kubernetes Secret containing `DATABASE_URL`). Any pod can look up completed task results by canonical ID or alias, eliminating 404 routing anomalies without requiring session affinity.
+
+See the [PostgreSQL storage guide](postgresql.md) for database provisioning, serialized migration options, and pool sizing.
+
+Note that metrics remain process-local and should be scraped from each pod individually. When PostgreSQL storage is enabled, the `/readyz` probe checks database connectivity with a 2-second timeout (it does not probe upstream agents).
 
 ## Autoscaling
 

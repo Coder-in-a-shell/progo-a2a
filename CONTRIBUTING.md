@@ -19,8 +19,21 @@ cd progo-a2a
 # Build the proxy binary
 make build
 
-# Run unit and integration tests
+# Run unit and mock tests (skips postgres integration tests when POSTGRES_TEST_DSN is unset)
 make test
+
+# Run PostgreSQL integration tests locally:
+# 1. Start a disposable database reachable only from the host
+docker run --rm -d --name progo-a2a-postgres-test \
+  -e POSTGRES_PASSWORD=postgres_test_password \
+  -e POSTGRES_DB=progo_test \
+  -p 127.0.0.1:5432:5432 postgres:17-alpine
+
+# 2. Run all tests with POSTGRES_TEST_DSN set
+POSTGRES_TEST_DSN="postgres://postgres:postgres_test_password@localhost:5432/progo_test?sslmode=disable" go test -count=1 -v -race ./...
+
+# 3. Stop the disposable database
+docker stop progo-a2a-postgres-test
 
 # Run throughput benchmarks
 make bench
@@ -30,12 +43,17 @@ make bench
 
 ## Code Quality Standards
 
-1. **Test-Driven Development (TDD)**:
-   - When adding new adapters or features, write unit tests first.
+1. **Test-Driven Development (TDD) & Integration Testing**:
+   - When adding new adapters, features, or storage operations, write unit and integration tests first.
    - All tests must pass with the Go race detector enabled:
      ```bash
      go test -count=1 -v -race ./...
      ```
+   - **PostgreSQL Integration Tests**: CI runs integration tests against a `postgres:17-alpine` service container with `POSTGRES_TEST_DSN`. Contributors modifying `pkg/storage` or task persistence must run:
+     ```bash
+     POSTGRES_TEST_DSN="postgres://postgres:postgres_test_password@localhost:5432/progo_test?sslmode=disable" go test -count=1 -v -race ./pkg/storage/...
+     ```
+   - Note that task storage is pluggable (`memory` or `postgres`); tests verify in-memory behavior as well as PostgreSQL schema migrations, advisory locking, and atomic upserts.
 
 2. **Clean Go Idioms & Formatting**:
    - Run `go fmt ./...` and `go vet ./...` before submitting PRs.

@@ -12,11 +12,12 @@ ProGoA2A is configured via a single YAML file. By default the binary loads `conf
 ./progo-a2a -config /etc/progo-a2a/config.yaml
 ```
 
-The file has three top-level sections:
+The file has four top-level sections:
 
 | Section | Required | Purpose |
 |---|---|---|
 | `server` | Yes | HTTP listener settings |
+| `storage` | No | Pluggable task storage (`memory` or `postgres`) |
 | `security` | No | API-key authentication & RBAC |
 | `agents` | Yes | Upstream agent definitions |
 
@@ -45,6 +46,52 @@ server:
 
 !!! tip "Sizing `write_timeout_seconds`"
     A request can consume multiple agent attempts plus backoff and fallback attempts. Set this timeout from your end-to-end latency budget, not only the largest single `timeout_seconds` value.
+
+---
+
+## `storage` Section
+
+Configures the storage backend for completed synchronous task responses. ProGoA2A supports two backends: `memory` (default in-process FIFO cache) and `postgres` (shared durable PostgreSQL storage). See the [PostgreSQL deployment guide](../deployment/postgresql.md) for architecture and operational details.
+
+```yaml
+storage:
+  backend: "memory"           # "memory" | "postgres" (default: "memory")
+
+  # In-memory settings (valid ONLY when backend is "memory")
+  memory:
+    max_tasks: 10000          # integer, 0 uses the 10000 default; maximum 1000000
+
+  # PostgreSQL settings (valid ONLY when backend is "postgres")
+  postgres:
+    dsn: "postgres://user:pass@host:5432/dbname?sslmode=require"
+    max_connections: 20       # integer, bounds: 1 to 1000 (default: 20)
+    min_connections: 2        # integer, bounds: 0 to max_connections (default: 2)
+    max_connection_lifetime_seconds: 1800 # integer, > 0 (default: 1800)
+    max_connection_idle_time_seconds: 300 # integer, > 0 (default: 300)
+    health_check_period_seconds: 30       # integer, > 0 (default: 30)
+    connect_timeout_seconds: 5            # integer, > 0 (default: 5)
+    migrate_on_start: false               # boolean (default: false)
+```
+
+| Field | Type | Default | Bounds / Constraints | Description |
+|---|---|---|---|---|
+| `backend` | string | `"memory"` | `"memory"` \| `"postgres"` | Storage backend selection. |
+| `memory.max_tasks` | integer | `10000` | `0` uses default; maximum `1000000` | Maximum number of task responses retained in memory before FIFO eviction. |
+| `postgres.dsn` | string | `""` | Non-empty when `backend: postgres` | PostgreSQL connection DSN. Supports `${DATABASE_URL}` references. |
+| `postgres.max_connections` | integer | `20` | `1` to `1000` | Maximum open connections in the pgx connection pool. |
+| `postgres.min_connections` | integer | `2` | `0` to `max_connections` | Minimum idle connections pre-warmed in the pool. |
+| `postgres.max_connection_lifetime_seconds` | integer | `1800` | `> 0` | Maximum lifetime of a connection before being closed and recycled. |
+| `postgres.max_connection_idle_time_seconds` | integer | `300` | `> 0` | Maximum duration an idle connection remains open. |
+| `postgres.health_check_period_seconds` | integer | `30` | `> 0` | Interval at which health checks ping idle connections. |
+| `postgres.connect_timeout_seconds` | integer | `5` | `> 0` | Context timeout for establishing initial database connections and startup ping. |
+| `postgres.migrate_on_start` | boolean | `false` | `true` \| `false` | When `true`, automatically applies embedded idempotent migrations with advisory locking on startup. |
+
+!!! warning "Mutual Exclusion"
+    The configuration validator enforces strict separation between backend configurations:
+
+    - When `backend: memory` (or empty), configuring any `postgres` settings or a non-empty `postgres.dsn` causes startup validation to fail.
+    - When `backend: postgres`, configuring any non-zero `memory` settings causes startup validation to fail.
+    - In dual-mode configuration files (like `config/progo-a2a.example.yaml`), omit explicit pool and memory settings to allow the loader to inject backend-specific defaults dynamically.
 
 ---
 
@@ -332,6 +379,16 @@ agents:
 | `server.read_timeout_seconds` | `30` | |
 | `server.write_timeout_seconds` | `120` | Must exceed agent timeouts |
 | `server.idle_timeout_seconds` | `60` | |
+| `storage.backend` | `"memory"` | `"memory"` \| `"postgres"` |
+| `storage.memory.max_tasks` | `10000` | Bounds: 0 to 1,000,000 |
+| `storage.postgres.dsn` | `""` | Required for postgres backend |
+| `storage.postgres.max_connections` | `20` | Bounds: 1 to 1,000 |
+| `storage.postgres.min_connections` | `2` | Bounds: 0 to max_connections |
+| `storage.postgres.max_connection_lifetime_seconds` | `1800` | Recycling interval |
+| `storage.postgres.max_connection_idle_time_seconds` | `300` | Idle timeout |
+| `storage.postgres.health_check_period_seconds` | `30` | Background ping interval |
+| `storage.postgres.connect_timeout_seconds` | `5` | Startup dial/ping timeout |
+| `storage.postgres.migrate_on_start` | `false` | Run embedded migrations on startup |
 | `security.enabled` | `false` | |
 | `agent.timeout_seconds` | `60` | Per-attempt |
 | `agent.retries` | `0` | Additional attempts |

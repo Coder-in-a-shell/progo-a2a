@@ -18,7 +18,7 @@ ProGoA2A translates a common task request into payloads for LangGraph, CrewAI, A
 - Per-attempt timeout, exponential backoff with jitter, and fallback graphs checked for cycles at startup.
 - Synchronous JSON and streaming SSE routes.
 - Inbound bearer/`X-API-Key` authentication with per-agent allowlists.
-- Bounded 10,000-entry in-memory cache for completed synchronous results.
+- Pluggable task storage: bounded in-memory cache (default 10,000 entries) or durable PostgreSQL storage (CI-tested with PostgreSQL 17).
 - Request IDs, structured logs, health/readiness routes, and in-process metrics.
 - Race-tested end-to-end suite and local microbenchmarks.
 
@@ -106,20 +106,21 @@ curl -N -sS http://localhost:8080/a2a/v1/tasks/stream \
 | `GET` | `/a2a/v1/agents/{id}` | Read one agent card |
 | `POST` | `/a2a/v1/tasks` | Synchronous direct/capability dispatch |
 | `POST` | `/a2a/v1/tasks/stream` | Streaming direct/capability dispatch |
-| `GET` | `/a2a/v1/tasks/{task_id}` | Read a cached completed result |
+| `GET` | `/a2a/v1/tasks/{task_id}` | Read a stored completed result |
 | `POST` | `/api/v1/invoke/{agent_id}` | Direct synchronous invocation |
 | `POST` | `/api/v1/stream/{agent_id}` | Direct streaming invocation |
 | `GET` | `/healthz`, `/readyz`, `/metrics` | Public operational routes |
 
 ## Docker
 
-The repository builds an image locally; no official registry image or release binary is published yet.
+The repository builds an image locally; no official registry image or release binary is published yet. The default Docker Compose stack includes PostgreSQL 17 Alpine with health checks:
 
 ```bash
-docker compose up --build
+make docker-up      # docker compose up -d --build
+make docker-down    # docker compose down (preserves database volume)
 ```
 
-The checked-in Compose file uses placeholder upstream endpoints and secrets. See the [Docker guide](https://coder-in-a-shell.github.io/progo-a2a/deployment/docker/) before real use.
+The checked-in Compose file uses placeholder upstream endpoints and secrets. See the [Docker guide](https://coder-in-a-shell.github.io/progo-a2a/deployment/docker/) and [PostgreSQL guide](https://coder-in-a-shell.github.io/progo-a2a/deployment/postgresql/) before real use.
 
 ## Development
 
@@ -128,6 +129,12 @@ make test   # go test -v -race ./...
 go vet ./...
 make build
 make bench
+```
+
+To run PostgreSQL integration tests against a database reachable from the host:
+
+```bash
+POSTGRES_TEST_DSN="postgres://postgres:postgres_test_password@localhost:5432/progo_test?sslmode=disable" make test
 ```
 
 On an Apple M2 with Go 1.26.5, a short local benchmark run measured roughly 42–47 µs/op for direct dispatcher calls and 57 µs/op through the task HTTP route. These tests use local mock servers; they are not production capacity guarantees.
@@ -143,7 +150,7 @@ python3 -m venv .venv
 
 ## Production boundaries
 
-Before production use, review the [production checklist](https://coder-in-a-shell.github.io/progo-a2a/deployment/production-checklist/). Important current limits include process-local task storage and metrics, no built-in TLS/rate limiting/circuit breaker, no stream heartbeats or resume support, and readiness that does not probe upstreams.
+Before production use, review the [production checklist](https://coder-in-a-shell.github.io/progo-a2a/deployment/production-checklist/). Important current limits include process-local metrics (task storage supports in-memory or PostgreSQL, but PostgreSQL does not add async jobs, stream persistence, cancellation, or automatic retention), no built-in TLS/rate limiting/circuit breaker, no stream heartbeats or resume support, and readiness that does not probe upstreams.
 
 ## Documentation
 
@@ -154,6 +161,7 @@ The full documentation is published at [coder-in-a-shell.github.io/progo-a2a](ht
 - [Adapters](https://coder-in-a-shell.github.io/progo-a2a/adapters/)
 - [API reference](https://coder-in-a-shell.github.io/progo-a2a/api/)
 - [Architecture](https://coder-in-a-shell.github.io/progo-a2a/concepts/architecture/)
+- [PostgreSQL storage](https://coder-in-a-shell.github.io/progo-a2a/deployment/postgresql/)
 
 ## Contributing and license
 

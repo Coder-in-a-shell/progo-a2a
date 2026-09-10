@@ -99,5 +99,6 @@ nav:
       - Observability & Metrics: api/observability.md
   - Production & Deployment:
       - Docker & Compose: deployment/docker.md
+      - PostgreSQL Storage: deployment/postgresql.md
       - Kubernetes: deployment/kubernetes.md
       - Production Checklist: deployment/production-checklist.md
