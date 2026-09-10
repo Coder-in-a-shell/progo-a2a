@@ -35,7 +35,8 @@ sequenceDiagram
 | `pkg/model` | Agent, task, artifact, event, and error types |
 | `pkg/adapter` | Built-in translations and adapter registry |
 | `pkg/dispatcher` | Agent selection, retry/backoff, timeout, fallback, pooled HTTP transport |
-| `pkg/server` | Routes, handlers, middleware, in-memory task cache, health/readiness |
+| `pkg/server` | Routes, handlers, middleware, task storage integration, health/readiness |
+| `pkg/storage` | TaskStore interface, in-memory FIFO cache, and PostgreSQL durable backend with migrations |
 | `pkg/stream` | Thread-safe SSE writer |
 | `pkg/metrics` | In-process Prometheus text collector |
 | `tests` | End-to-end and benchmark suites with local mock agents |
@@ -59,4 +60,8 @@ The server uses configured read, write, and idle timeouts. SSE handlers clear th
 
 ## State and scaling
 
-Routing/configuration is read-only after startup. The only request-derived application state is the bounded synchronous task-result cache and in-process metrics. Both are local to one replica and reset on restart. Horizontal replicas therefore work for stateless invocation, but task retrieval and metric aggregation require operational care.
+Routing/configuration is read-only after startup. The only request-derived application state is completed synchronous task storage and in-process metrics.
+
+When configured with the default `memory` backend, task results are stored in a process-local, bounded FIFO cache (default 10,000 entries) that resets on restart and is not shared across replicas. When configured with the `postgres` backend, completed synchronous task results are persisted to a shared PostgreSQL database, enabling durable task lookup across horizontal replicas and process restarts. Metrics remain in-process and process-local.
+
+Be precise about storage boundaries: PostgreSQL makes completed synchronous task lookup durable and shared across replicas; it does not create asynchronous background jobs, persist streaming events, add cancellation, provide automatic retention, or implement official A2A 1.0. Horizontal replicas work seamlessly for stateless invocation and durable task retrieval, while Prometheus metrics should be scraped per replica. See the [PostgreSQL storage guide](../deployment/postgresql.md) for full deployment and operational details.

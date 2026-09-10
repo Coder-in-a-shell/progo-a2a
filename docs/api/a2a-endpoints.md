@@ -118,14 +118,19 @@ See [streaming](../concepts/streaming.md) for failure and fallback boundaries.
 
 ## `GET /a2a/v1/tasks/{task_id}`
 
-Returns a cached result from a completed synchronous A2A or REST invocation. It does not poll an active job.
+Returns a stored result from a completed synchronous A2A or REST invocation. It does not poll an active job or create background workers.
 
 ```bash
 curl -sS http://localhost:8080/a2a/v1/tasks/task-0123456789abcdef \
   -H "Authorization: Bearer $PROXY_API_KEY"
 ```
 
-The cache is per-process, FIFO, capped at 10,000 results, and cleared on restart. Streaming results are not cached.
+Clients can query by either the canonical proxy `task_id` or the client-supplied task `id` (alias).
+
+- **In-memory (`backend: memory`)**: Storage is per-process, FIFO, capped at 10,000 results (configurable up to 1,000,000), and cleared on restart.
+- **PostgreSQL (`backend: postgres`)**: Storage is durable and queryable across all proxy replicas connecting to the database.
+
+Streaming results are delivered over SSE and are not stored.
 
 ## Errors
 
@@ -154,6 +159,7 @@ Common statuses:
 | `413` | `REQUEST_TOO_LARGE`, body exceeds 10 MiB |
 | `500` | `INTERNAL_ERROR` or unsupported response streaming |
 | `502` | `DOWNSTREAM_UNAVAILABLE` after attempts/fallbacks |
+| `503` | `TASK_STORAGE_UNAVAILABLE` (downstream succeeded but storage persistence failed) |
 | `504` | `DOWNSTREAM_TIMEOUT` |
 
 After SSE headers are sent, failures are emitted as `task_error` events instead of changing the HTTP status.

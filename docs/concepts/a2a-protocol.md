@@ -13,7 +13,7 @@ ProGoA2A uses A2A concepts—agent discovery, tasks, capabilities, artifacts, an
 | `GET` | `/a2a/v1/agents/{id}` | Get one agent card |
 | `POST` | `/a2a/v1/tasks` | Synchronous task dispatch |
 | `POST` | `/a2a/v1/tasks/stream` | Streaming task dispatch over SSE |
-| `GET` | `/a2a/v1/tasks/{task_id}` | Retrieve a cached synchronous result |
+| `GET` | `/a2a/v1/tasks/{task_id}` | Retrieve a stored synchronous result |
 
 See [A2A endpoint reference](../api/a2a-endpoints.md) for complete examples.
 
@@ -60,11 +60,12 @@ Status values defined by the model are `PENDING`, `IN_PROGRESS`, `COMPLETED`, `F
 
 ## Result retrieval
 
-Synchronous results are cached in the process and can be read with `GET /a2a/v1/tasks/{task_id}`. This is retrieval after a completed synchronous request, not an asynchronous job queue:
+Synchronous results are stored using the configured storage backend and can be read with `GET /a2a/v1/tasks/{task_id}` (queryable by canonical task ID or client-provided alias ID). This is retrieval after a completed synchronous request, not an asynchronous job queue:
 
 - task submission blocks until the upstream responds;
-- streaming results are not inserted in the cache;
-- the cache holds at most 10,000 entries and evicts the oldest;
-- entries disappear on restart and are not shared across replicas.
+- streaming results are not persisted or inserted into storage;
+- with the default `memory` backend, storage is a process-local FIFO cache capped at 10,000 entries (configurable up to 1,000,000) that resets on restart and is not shared across replicas;
+- with the `postgres` backend, storage is durable and shared across all proxy replicas connecting to the database;
+- the storage layer does not add task cancellation or automatic retention pruning.
 
-Use an external durable store if clients need reliable cross-replica retrieval.
+Be precise about boundaries: PostgreSQL makes completed synchronous task lookup durable and shared across replicas; it does not create asynchronous background jobs, persist streaming events, add cancellation, provide retention, or implement the official A2A 1.0 JSON-RPC specification. See [PostgreSQL Task Storage](../deployment/postgresql.md) for full details.

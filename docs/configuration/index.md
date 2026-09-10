@@ -7,14 +7,15 @@ ProGoA2A loads one YAML file at startup. The CLI does not hot-reload it; restart
 | Section | Purpose |
 |---|---|
 | `server` | Listen address and HTTP timeouts |
+| `storage` | Pluggable task storage: in-memory FIFO cache or durable PostgreSQL |
 | `security` | Inbound API keys and per-agent allowlists |
 | `agents` | Upstream endpoints, adapter types, retry/fallback policy, auth, and adapter-specific options |
 
-Start with the [complete field reference](reference.md), then review [Security & RBAC](security-rbac.md) before exposing the service outside a trusted development network.
+Start with the [complete field reference](reference.md), then review [Security & RBAC](security-rbac.md) and [PostgreSQL Storage](../deployment/postgresql.md) before exposing the service outside a trusted development network.
 
 ## Validation performed at startup
 
-The loader applies defaults, then checks the listen port, unique/non-empty agent IDs, agent type and endpoint presence, custom mapping presence, non-empty/unique inbound keys when security is enabled, allowed-agent references, fallback references, self-fallbacks, and fallback cycles. Adapter names themselves are resolved when a request is dispatched, so use one of `langgraph`, `crewai`, `autogen`, `openai`, or `custom`.
+The loader applies defaults, then checks the listen port, unique/non-empty agent IDs, supported adapter types, absolute HTTP(S) endpoints, retry/timeout bounds, authentication settings, custom-adapter mappings, non-empty/unique inbound keys when security is enabled, allowed-agent references, fallback references, self-fallbacks, fallback cycles, and storage backend bounds (including mutual exclusion between memory and postgres settings).
 
 ## Secrets
 

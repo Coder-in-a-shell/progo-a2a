@@ -15,10 +15,13 @@ server:
   idle_timeout_seconds: 60
 
 # Storage configuration
+# Supports environment-driven selection between in-memory and PostgreSQL storage.
+# Defaults to in-memory storage when STORAGE_BACKEND is unset.
 storage:
-  backend: memory
-  memory:
-    max_tasks: 10000
+  backend: "${STORAGE_BACKEND}"
+  postgres:
+    dsn: "${DATABASE_URL}"
+    migrate_on_start: ${MIGRATE_ON_START}
 
 # Security & Access Control
 security:

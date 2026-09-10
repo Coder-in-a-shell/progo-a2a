@@ -23,10 +23,18 @@ ProGoA2A has solid foundations, but the current repository is an early-stage gat
 
 ## State and scaling
 
-- [ ] Decide whether cached task retrieval is required.
-- [ ] If required across replicas/restarts, replace the in-memory 10,000-entry cache with shared durable storage.
+- [ ] Select appropriate task storage: `memory` for ephemeral single-instance setups, or `postgres` for durable multi-replica deployments.
+- [ ] If using PostgreSQL storage:
+    - [ ] Enforce encrypted connections (`sslmode=require` or higher in DSN).
+    - [ ] Inject `DATABASE_URL` securely via secret management; never commit plaintext credentials.
+    - [ ] Keep `migrate_on_start: false` in multi-replica production; run the checked-in SQL in one serialized deployment step, or migrate through one controlled instance before scaling out.
+    - [ ] Size the connection pool (`max_connections`, `min_connections`) against database server capacity across all replicas.
+    - [ ] Implement an automated data retention cleanup policy (the `task_results` table is unbounded and does not auto-purge).
+    - [ ] Establish automated backup, WAL archiving, and disaster recovery procedures.
+    - [ ] Understand failure semantics: upstream success followed by storage failure returns HTTP 503 `TASK_STORAGE_UNAVAILABLE`; do not blindly retry non-idempotent downstream work.
+    - [ ] Understand readiness behavior: `/readyz` probes database connectivity with a 2-second timeout and fails (503) if unreachable.
 - [ ] Scrape every replica; metrics are process-local.
-- [ ] Remember that `/readyz` checks registration/config presence, not upstream health.
+- [ ] Remember that `/readyz` checks registration/config presence and database connectivity (when PostgreSQL is used), but does not probe upstream agent health.
 
 ## Observability
 
