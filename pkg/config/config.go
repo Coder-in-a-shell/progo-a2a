@@ -4,6 +4,7 @@ type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Security SecurityConfig `yaml:"security"`
 	Agents   []AgentConfig  `yaml:"agents"`
+	Storage  StorageConfig  `yaml:"storage"`
 }
 
 type ServerConfig struct {
@@ -70,4 +71,25 @@ type ResponseMapping struct {
 type StreamMapping struct {
 	DataPath     string `yaml:"data_path"`
 	DoneSentinel string `yaml:"done_sentinel"`
+}
+
+type StorageConfig struct {
+	Backend  string                `yaml:"backend"`
+	Memory   MemoryStorageConfig   `yaml:"memory"`
+	Postgres PostgresStorageConfig `yaml:"postgres"`
+}
+
+type MemoryStorageConfig struct {
+	MaxTasks int `yaml:"max_tasks"`
+}
+
+type PostgresStorageConfig struct {
+	DSN                          string `yaml:"dsn"`
+	MaxConnections               int    `yaml:"max_connections"`
+	MinConnections               int    `yaml:"min_connections"`
+	MaxConnectionLifetimeSeconds int    `yaml:"max_connection_lifetime_seconds"`
+	MaxConnectionIdleTimeSeconds int    `yaml:"max_connection_idle_time_seconds"`
+	HealthCheckPeriodSeconds     int    `yaml:"health_check_period_seconds"`
+	ConnectTimeoutSeconds        int    `yaml:"connect_timeout_seconds"`
+	MigrateOnStart               bool   `yaml:"migrate_on_start"`
 }

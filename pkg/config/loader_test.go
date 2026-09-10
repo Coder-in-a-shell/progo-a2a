@@ -1058,6 +1058,12 @@ func TestLoadReferenceExampleConfig(t *testing.T) {
 			t.Errorf("missing agent type %s in example config", expectedType)
 		}
 	}
+	if cfg.Storage.Backend != "memory" {
+		t.Errorf("expected storage backend memory, got %s", cfg.Storage.Backend)
+	}
+	if cfg.Storage.Memory.MaxTasks != 10000 {
+		t.Errorf("expected storage memory max_tasks 10000, got %d", cfg.Storage.Memory.MaxTasks)
+	}
 }
 
 func TestLoadProgoExampleConfig(t *testing.T) {
@@ -1095,6 +1101,12 @@ func TestLoadProgoExampleConfig(t *testing.T) {
 		if !types[expectedType] {
 			t.Errorf("missing agent type %s in example config", expectedType)
 		}
+	}
+	if cfg.Storage.Backend != "memory" {
+		t.Errorf("expected storage backend memory, got %s", cfg.Storage.Backend)
+	}
+	if cfg.Storage.Memory.MaxTasks != 10000 {
+		t.Errorf("expected storage memory max_tasks 10000, got %d", cfg.Storage.Memory.MaxTasks)
 	}
 }
 
@@ -1143,5 +1155,493 @@ func TestValidationCyclicFallback(t *testing.T) {
 	err := Validate(cfg)
 	if err == nil || !strings.Contains(err.Error(), "cyclic fallback detected") {
 		t.Fatalf("expected cyclic fallback error, got: %v", err)
+	}
+}
+
+func TestStorageConfig_Defaults(t *testing.T) {
+	t.Run("omitted storage defaults to memory with 10000 max_tasks", func(t *testing.T) {
+		yamlContent := `
+agents:
+  - id: "agent-default"
+    type: "openai"
+    endpoint: "http://localhost:8000"
+`
+		tmpFile, err := os.CreateTemp("", "storage-default-*.yaml")
+		if err != nil {
+			t.Fatalf("create temp file failed: %v", err)
+		}
+		defer os.Remove(tmpFile.Name())
+		if _, err := tmpFile.Write([]byte(yamlContent)); err != nil {
+			t.Fatalf("write temp file failed: %v", err)
+		}
+		tmpFile.Close()
+
+		cfg, err := Load(tmpFile.Name())
+		if err != nil {
+			t.Fatalf("failed to load config: %v", err)
+		}
+
+		if cfg.Storage.Backend != "memory" {
+			t.Errorf("expected backend 'memory', got %q", cfg.Storage.Backend)
+		}
+		if cfg.Storage.Memory.MaxTasks != 10000 {
+			t.Errorf("expected max_tasks 10000, got %d", cfg.Storage.Memory.MaxTasks)
+		}
+	})
+
+	t.Run("explicit memory backend with zero max_tasks defaults to 10000", func(t *testing.T) {
+		yamlContent := `
+storage:
+  backend: memory
+agents:
+  - id: "agent-default"
+    type: "openai"
+    endpoint: "http://localhost:8000"
+`
+		tmpFile, err := os.CreateTemp("", "storage-mem-*.yaml")
+		if err != nil {
+			t.Fatalf("create temp file failed: %v", err)
+		}
+		defer os.Remove(tmpFile.Name())
+		if _, err := tmpFile.Write([]byte(yamlContent)); err != nil {
+			t.Fatalf("write temp file failed: %v", err)
+		}
+		tmpFile.Close()
+
+		cfg, err := Load(tmpFile.Name())
+		if err != nil {
+			t.Fatalf("failed to load config: %v", err)
+		}
+
+		if cfg.Storage.Backend != "memory" {
+			t.Errorf("expected backend 'memory', got %q", cfg.Storage.Backend)
+		}
+		if cfg.Storage.Memory.MaxTasks != 10000 {
+			t.Errorf("expected max_tasks 10000, got %d", cfg.Storage.Memory.MaxTasks)
+		}
+	})
+
+	t.Run("postgres backend defaults populated through Load", func(t *testing.T) {
+		yamlContent := `
+storage:
+  backend: postgres
+  postgres:
+    dsn: "postgres://user:pass@localhost:5432/mydb"
+agents:
+  - id: "agent-default"
+    type: "openai"
+    endpoint: "http://localhost:8000"
+`
+		tmpFile, err := os.CreateTemp("", "storage-pg-*.yaml")
+		if err != nil {
+			t.Fatalf("create temp file failed: %v", err)
+		}
+		defer os.Remove(tmpFile.Name())
+		if _, err := tmpFile.Write([]byte(yamlContent)); err != nil {
+			t.Fatalf("write temp file failed: %v", err)
+		}
+		tmpFile.Close()
+
+		cfg, err := Load(tmpFile.Name())
+		if err != nil {
+			t.Fatalf("failed to load config: %v", err)
+		}
+
+		if cfg.Storage.Backend != "postgres" {
+			t.Errorf("expected backend 'postgres', got %q", cfg.Storage.Backend)
+		}
+		if cfg.Storage.Postgres.MaxConnections != 20 {
+			t.Errorf("expected max_connections 20, got %d", cfg.Storage.Postgres.MaxConnections)
+		}
+		if cfg.Storage.Postgres.MinConnections != 2 {
+			t.Errorf("expected min_connections 2, got %d", cfg.Storage.Postgres.MinConnections)
+		}
+		if cfg.Storage.Postgres.MaxConnectionLifetimeSeconds != 1800 {
+			t.Errorf("expected max lifetime 1800, got %d", cfg.Storage.Postgres.MaxConnectionLifetimeSeconds)
+		}
+		if cfg.Storage.Postgres.MaxConnectionIdleTimeSeconds != 300 {
+			t.Errorf("expected max idle 300, got %d", cfg.Storage.Postgres.MaxConnectionIdleTimeSeconds)
+		}
+		if cfg.Storage.Postgres.HealthCheckPeriodSeconds != 30 {
+			t.Errorf("expected health check 30, got %d", cfg.Storage.Postgres.HealthCheckPeriodSeconds)
+		}
+		if cfg.Storage.Postgres.ConnectTimeoutSeconds != 5 {
+			t.Errorf("expected connect timeout 5, got %d", cfg.Storage.Postgres.ConnectTimeoutSeconds)
+		}
+	})
+
+	t.Run("direct Validate does not mutate hand-built configs", func(t *testing.T) {
+		cfg := &Config{
+			Server: ServerConfig{Port: 8080},
+			Agents: []AgentConfig{
+				{ID: "agent-1", Type: "openai", Endpoint: "http://localhost:8000"},
+			},
+			Storage: StorageConfig{
+				Backend: "postgres",
+				Postgres: PostgresStorageConfig{
+					DSN:                          "postgres://localhost/test",
+					MaxConnections:               15,
+					MinConnections:               0,
+					MaxConnectionLifetimeSeconds: 600,
+					MaxConnectionIdleTimeSeconds: 120,
+					HealthCheckPeriodSeconds:     15,
+					ConnectTimeoutSeconds:        3,
+				},
+			},
+		}
+
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("expected direct Validate to succeed, got: %v", err)
+		}
+
+		if cfg.Storage.Postgres.MinConnections != 0 {
+			t.Errorf("expected MinConnections to remain 0, got %d", cfg.Storage.Postgres.MinConnections)
+		}
+		if cfg.Storage.Postgres.MaxConnections != 15 {
+			t.Errorf("expected MaxConnections to remain 15, got %d", cfg.Storage.Postgres.MaxConnections)
+		}
+
+		// Also check that Backend: "" is not mutated
+		cfgMem := &Config{
+			Server: ServerConfig{Port: 8080},
+			Agents: []AgentConfig{
+				{ID: "agent-1", Type: "openai", Endpoint: "http://localhost:8000"},
+			},
+		}
+		if err := Validate(cfgMem); err != nil {
+			t.Fatalf("expected direct Validate to succeed on empty storage, got: %v", err)
+		}
+		if cfgMem.Storage.Backend != "" {
+			t.Errorf("expected Storage.Backend to remain empty string, got %q", cfgMem.Storage.Backend)
+		}
+	})
+}
+
+func TestStorageConfig_Validation(t *testing.T) {
+	baseValidConfig := func() Config {
+		return Config{
+			Server: ServerConfig{Port: 8080},
+			Agents: []AgentConfig{
+				{ID: "agent-1", Type: "openai", Endpoint: "http://localhost:8000"},
+			},
+		}
+	}
+
+	validPGConfig := func() Config {
+		c := baseValidConfig()
+		c.Storage = StorageConfig{
+			Backend: "postgres",
+			Postgres: PostgresStorageConfig{
+				DSN:                          "postgres://user:pass@localhost:5432/db",
+				MaxConnections:               20,
+				MinConnections:               2,
+				MaxConnectionLifetimeSeconds: 1800,
+				MaxConnectionIdleTimeSeconds: 300,
+				HealthCheckPeriodSeconds:     30,
+				ConnectTimeoutSeconds:        5,
+			},
+		}
+		return c
+	}
+
+	tests := []struct {
+		name        string
+		modify      func(c *Config)
+		errContains string
+		expectValid bool
+	}{
+		{
+			name:        "valid default memory config",
+			modify:      func(c *Config) {},
+			expectValid: true,
+		},
+		{
+			name: "valid memory config with custom max_tasks",
+			modify: func(c *Config) {
+				c.Storage.Backend = "memory"
+				c.Storage.Memory.MaxTasks = 50000
+			},
+			expectValid: true,
+		},
+		{
+			name: "valid memory config with upper bound max_tasks 1000000",
+			modify: func(c *Config) {
+				c.Storage.Backend = "memory"
+				c.Storage.Memory.MaxTasks = 1000000
+			},
+			expectValid: true,
+		},
+		{
+			name: "memory max_tasks negative rejected",
+			modify: func(c *Config) {
+				c.Storage.Backend = "memory"
+				c.Storage.Memory.MaxTasks = -1
+			},
+			errContains: "storage memory max_tasks must be between 0 and 1000000",
+		},
+		{
+			name: "memory max_tasks above 1000000 rejected",
+			modify: func(c *Config) {
+				c.Storage.Backend = "memory"
+				c.Storage.Memory.MaxTasks = 1000001
+			},
+			errContains: "storage memory max_tasks must be between 0 and 1000000",
+		},
+		{
+			name: "memory backend rejects non-empty postgres DSN",
+			modify: func(c *Config) {
+				c.Storage.Backend = "memory"
+				c.Storage.Postgres.DSN = "postgres://user:super_secret_pw@localhost:5432/db"
+			},
+			errContains: "postgres dsn cannot be configured when storage backend is memory",
+		},
+		{
+			name: "memory backend rejects whitespace postgres DSN",
+			modify: func(c *Config) {
+				c.Storage.Backend = "memory"
+				c.Storage.Postgres.DSN = "   "
+			},
+			errContains: "postgres dsn cannot be configured when storage backend is memory",
+		},
+		{
+			name: "memory backend rejects ignored postgres pool settings",
+			modify: func(c *Config) {
+				c.Storage.Backend = "memory"
+				c.Storage.Postgres.MaxConnections = 20
+			},
+			errContains: "postgres settings cannot be configured when storage backend is memory",
+		},
+		{
+			name: "unknown storage backend rejected",
+			modify: func(c *Config) {
+				c.Storage.Backend = "redis"
+			},
+			errContains: "unknown storage backend \"redis\"",
+		},
+		{
+			name: "unsupported sqlite backend rejected",
+			modify: func(c *Config) {
+				c.Storage.Backend = "sqlite"
+			},
+			errContains: "unknown storage backend \"sqlite\"",
+		},
+		{
+			name:        "valid postgres config",
+			modify:      func(c *Config) { *c = validPGConfig() },
+			expectValid: true,
+		},
+		{
+			name: "postgres backend rejects ignored memory settings",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Memory.MaxTasks = 10000
+			},
+			errContains: "memory settings cannot be configured when storage backend is postgres",
+		},
+		{
+			name: "valid postgres min_connections 0",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Postgres.MinConnections = 0
+			},
+			expectValid: true,
+		},
+		{
+			name: "valid postgres min_connections equal max_connections",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Postgres.MinConnections = 20
+				c.Storage.Postgres.MaxConnections = 20
+			},
+			expectValid: true,
+		},
+		{
+			name: "valid postgres max_connections upper boundary 1000",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Postgres.MaxConnections = 1000
+				c.Storage.Postgres.MinConnections = 100
+			},
+			expectValid: true,
+		},
+		{
+			name: "valid postgres max_connections lower boundary 1",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Postgres.MaxConnections = 1
+				c.Storage.Postgres.MinConnections = 1
+			},
+			expectValid: true,
+		},
+		{
+			name: "postgres empty DSN rejected",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Postgres.DSN = ""
+			},
+			errContains: "storage postgres dsn cannot be empty or whitespace",
+		},
+		{
+			name: "postgres whitespace DSN rejected",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Postgres.DSN = "   \t\n  "
+			},
+			errContains: "storage postgres dsn cannot be empty or whitespace",
+		},
+		{
+			name: "postgres max_connections zero rejected",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Postgres.MaxConnections = 0
+			},
+			errContains: "storage postgres max_connections must be between 1 and 1000",
+		},
+		{
+			name: "postgres max_connections negative rejected",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Postgres.MaxConnections = -5
+			},
+			errContains: "storage postgres max_connections must be between 1 and 1000",
+		},
+		{
+			name: "postgres max_connections exceeds 1000 rejected",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Postgres.MaxConnections = 1001
+			},
+			errContains: "storage postgres max_connections must be between 1 and 1000",
+		},
+		{
+			name: "postgres min_connections negative rejected",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Postgres.MinConnections = -1
+			},
+			errContains: "storage postgres min_connections must be between 0 and max_connections",
+		},
+		{
+			name: "postgres min_connections greater than max_connections rejected",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Postgres.MaxConnections = 20
+				c.Storage.Postgres.MinConnections = 21
+			},
+			errContains: "storage postgres min_connections must be between 0 and max_connections (20), got 21",
+		},
+		{
+			name: "postgres max_connection_lifetime_seconds zero rejected",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Postgres.MaxConnectionLifetimeSeconds = 0
+			},
+			errContains: "storage postgres max_connection_lifetime_seconds must be positive",
+		},
+		{
+			name: "postgres max_connection_lifetime_seconds negative rejected",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Postgres.MaxConnectionLifetimeSeconds = -10
+			},
+			errContains: "storage postgres max_connection_lifetime_seconds must be positive",
+		},
+		{
+			name: "postgres max_connection_idle_time_seconds zero rejected",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Postgres.MaxConnectionIdleTimeSeconds = 0
+			},
+			errContains: "storage postgres max_connection_idle_time_seconds must be positive",
+		},
+		{
+			name: "postgres max_connection_idle_time_seconds negative rejected",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Postgres.MaxConnectionIdleTimeSeconds = -1
+			},
+			errContains: "storage postgres max_connection_idle_time_seconds must be positive",
+		},
+		{
+			name: "postgres health_check_period_seconds zero rejected",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Postgres.HealthCheckPeriodSeconds = 0
+			},
+			errContains: "storage postgres health_check_period_seconds must be positive",
+		},
+		{
+			name: "postgres health_check_period_seconds negative rejected",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Postgres.HealthCheckPeriodSeconds = -1
+			},
+			errContains: "storage postgres health_check_period_seconds must be positive",
+		},
+		{
+			name: "postgres connect_timeout_seconds zero rejected",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Postgres.ConnectTimeoutSeconds = 0
+			},
+			errContains: "storage postgres connect_timeout_seconds must be positive",
+		},
+		{
+			name: "postgres connect_timeout_seconds negative rejected",
+			modify: func(c *Config) {
+				*c = validPGConfig()
+				c.Storage.Postgres.ConnectTimeoutSeconds = -1
+			},
+			errContains: "storage postgres connect_timeout_seconds must be positive",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			tc.modify(&cfg)
+			err := Validate(&cfg)
+
+			if tc.expectValid {
+				if err != nil {
+					t.Fatalf("expected valid config, got error: %v", err)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.errContains)
+			}
+			if !strings.Contains(err.Error(), tc.errContains) {
+				t.Errorf("expected error containing %q, got %q", tc.errContains, err.Error())
+			}
+		})
+	}
+}
+
+func TestStorageConfig_DSNNonLeakageInValidationError(t *testing.T) {
+	secretDSN := "postgres://admin_secret_user:super_secret_password_999@db.internal:5432/secrets"
+	cfg := Config{
+		Server: ServerConfig{Port: 8080},
+		Agents: []AgentConfig{
+			{ID: "agent-1", Type: "openai", Endpoint: "http://localhost:8000"},
+		},
+		Storage: StorageConfig{
+			Backend: "memory",
+			Postgres: PostgresStorageConfig{
+				DSN: secretDSN,
+			},
+		},
+	}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for memory backend with postgres DSN, got nil")
+	}
+	if strings.Contains(err.Error(), "super_secret_password_999") {
+		t.Errorf("validation error leaked password from DSN: %s", err.Error())
+	}
+	if strings.Contains(err.Error(), secretDSN) {
+		t.Errorf("validation error leaked full DSN: %s", err.Error())
 	}
 }

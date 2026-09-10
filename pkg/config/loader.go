@@ -60,4 +60,33 @@ func applyDefaults(cfg *Config) {
 			cfg.Agents[i].TimeoutSeconds = 60
 		}
 	}
+
+	if cfg.Storage.Backend == "" {
+		cfg.Storage.Backend = "memory"
+	}
+	switch cfg.Storage.Backend {
+	case "memory":
+		if cfg.Storage.Memory.MaxTasks == 0 {
+			cfg.Storage.Memory.MaxTasks = 10000
+		}
+	case "postgres":
+		if cfg.Storage.Postgres.MaxConnections == 0 {
+			cfg.Storage.Postgres.MaxConnections = 20
+		}
+		if cfg.Storage.Postgres.MinConnections == 0 {
+			cfg.Storage.Postgres.MinConnections = 2
+		}
+		if cfg.Storage.Postgres.MaxConnectionLifetimeSeconds == 0 {
+			cfg.Storage.Postgres.MaxConnectionLifetimeSeconds = 1800
+		}
+		if cfg.Storage.Postgres.MaxConnectionIdleTimeSeconds == 0 {
+			cfg.Storage.Postgres.MaxConnectionIdleTimeSeconds = 300
+		}
+		if cfg.Storage.Postgres.HealthCheckPeriodSeconds == 0 {
+			cfg.Storage.Postgres.HealthCheckPeriodSeconds = 30
+		}
+		if cfg.Storage.Postgres.ConnectTimeoutSeconds == 0 {
+			cfg.Storage.Postgres.ConnectTimeoutSeconds = 5
+		}
+	}
 }

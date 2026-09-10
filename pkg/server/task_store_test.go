@@ -433,3 +433,249 @@ func TestTaskStore_NilOptionsPreserveDefaultBehavior(t *testing.T) {
 		}
 	})
 }
+
+type mockHealthCheckStore struct {
+	customMockTaskStore
+	mu        sync.Mutex
+	pingCalls int
+	pingErr   error
+	pingDelay time.Duration
+}
+
+var _ storage.HealthChecker = (*mockHealthCheckStore)(nil)
+var _ storage.TaskStore = (*mockHealthCheckStore)(nil)
+
+func (m *mockHealthCheckStore) Ping(ctx context.Context) error {
+	m.mu.Lock()
+	m.pingCalls++
+	delay := m.pingDelay
+	err := m.pingErr
+	m.mu.Unlock()
+
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
+}
+
+func (m *mockHealthCheckStore) PingCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.pingCalls
+}
+
+func setupHealthTestRouter(store storage.TaskStore) (http.Handler, *mockHealthCheckStore) {
+	cfg := &config.Config{
+		Agents: []config.AgentConfig{
+			{ID: "bot-1", Name: "Bot 1", Type: "mock"},
+		},
+	}
+	reg := adapter.NewRegistry()
+	reg.Register(&mockAdapter{adapterType: "mock"})
+	disp := dispatcher.New(cfg, reg)
+	disp.SetHTTPClient(&http.Client{Transport: &mockTransport{}})
+
+	var hcStore *mockHealthCheckStore
+	var opts []RouterOption
+	if store != nil {
+		opts = append(opts, WithTaskStore(store))
+		if hc, ok := store.(*mockHealthCheckStore); ok {
+			hcStore = hc
+		}
+	}
+	router := SetupRouter(cfg, disp, opts...)
+	return router, hcStore
+}
+
+func TestHealthAndReadiness_LivenessNeverPings(t *testing.T) {
+	store := &mockHealthCheckStore{}
+	router, _ := setupHealthTestRouter(store)
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from healthz, got %d", rec.Code)
+	}
+	if store.PingCount() != 0 {
+		t.Errorf("expected liveness /healthz never to ping storage, but ping was called %d times", store.PingCount())
+	}
+
+	// Make multiple calls to ensure it remains pure liveness
+	for i := 0; i < 3; i++ {
+		rec = httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("call %d: expected 200, got %d", i, rec.Code)
+		}
+	}
+	if store.PingCount() != 0 {
+		t.Errorf("expected 0 ping calls after repeated healthz, got %d", store.PingCount())
+	}
+}
+
+func TestHealthAndReadiness_ReadinessPingsOnce(t *testing.T) {
+	store := &mockHealthCheckStore{}
+	router, _ := setupHealthTestRouter(store)
+
+	req := httptest.NewRequest("GET", "/readyz", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from readyz, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if store.PingCount() != 1 {
+		t.Errorf("expected readiness /readyz to ping storage exactly once, got %d", store.PingCount())
+	}
+
+	var respBody map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&respBody); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if respBody["status"] != "ready" {
+		t.Errorf("expected status 'ready', got %v", respBody["status"])
+	}
+}
+
+func TestHealthAndReadiness_StorageFailureReturnsGeneric503(t *testing.T) {
+	sensitiveErrorMsg := "connection to postgres://admin:super_secret_db_pass@db.internal:5432 failed: disk corrupt"
+	store := &mockHealthCheckStore{
+		pingErr: errors.New(sensitiveErrorMsg),
+	}
+	router, _ := setupHealthTestRouter(store)
+
+	req := httptest.NewRequest("GET", "/readyz", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 from failed storage readyz, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	bodyStr := rec.Body.String()
+	if strings.Contains(bodyStr, "super_secret_db_pass") {
+		t.Fatalf("storage ping error leaked sensitive credential: %s", bodyStr)
+	}
+	if strings.Contains(bodyStr, "disk corrupt") {
+		t.Fatalf("storage ping error leaked internal message: %s", bodyStr)
+	}
+
+	var respBody map[string]any
+	if err := json.Unmarshal([]byte(bodyStr), &respBody); err != nil {
+		t.Fatalf("failed to decode 503 response JSON: %v", err)
+	}
+	if respBody["status"] != "not ready" {
+		t.Errorf("expected status 'not ready', got %v", respBody["status"])
+	}
+	if respBody["error"] != "storage unavailable" {
+		t.Errorf("expected generic error 'storage unavailable', got %v", respBody["error"])
+	}
+}
+
+func TestHealthAndReadiness_CanceledAndSlowPingRespectsTimeout(t *testing.T) {
+	t.Run("slow ping exceeding 2s timeout returns 503 without leaking", func(t *testing.T) {
+		// Set pingDelay greater than 2 seconds (e.g. 2500ms)
+		store := &mockHealthCheckStore{
+			pingDelay: 2500 * time.Millisecond,
+		}
+		router, _ := setupHealthTestRouter(store)
+
+		start := time.Now()
+		req := httptest.NewRequest("GET", "/readyz", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		elapsed := time.Since(start)
+
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503 from timed out readyz, got %d", rec.Code)
+		}
+
+		// Elapsed should be around 2 seconds (bounded by 2s child context timeout)
+		if elapsed < 1800*time.Millisecond || elapsed > 3500*time.Millisecond {
+			t.Logf("elapsed duration: %v (expected ~2s)", elapsed)
+		}
+
+		var respBody map[string]any
+		if err := json.NewDecoder(rec.Body).Decode(&respBody); err != nil {
+			t.Fatalf("failed to decode JSON: %v", err)
+		}
+		if respBody["error"] != "storage unavailable" {
+			t.Errorf("expected generic error 'storage unavailable', got %v", respBody["error"])
+		}
+	})
+
+	t.Run("canceled request context returns 503", func(t *testing.T) {
+		store := &mockHealthCheckStore{}
+		router, _ := setupHealthTestRouter(store)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // pre-cancel context
+
+		req := httptest.NewRequestWithContext(ctx, "GET", "/readyz", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503 from canceled readyz, got %d", rec.Code)
+		}
+	})
+}
+
+func TestHealthAndReadiness_MemoryAndDefaultBehaviorUnchanged(t *testing.T) {
+	t.Run("memory store has no added readiness dependency", func(t *testing.T) {
+		memStore := storage.NewMemoryTaskStore(100)
+		router, _ := setupHealthTestRouter(memStore)
+
+		// healthz
+		reqHealth := httptest.NewRequest("GET", "/healthz", nil)
+		recHealth := httptest.NewRecorder()
+		router.ServeHTTP(recHealth, reqHealth)
+		if recHealth.Code != http.StatusOK {
+			t.Errorf("expected 200 from healthz with memory store, got %d", recHealth.Code)
+		}
+
+		// readyz
+		reqReady := httptest.NewRequest("GET", "/readyz", nil)
+		recReady := httptest.NewRecorder()
+		router.ServeHTTP(recReady, reqReady)
+		if recReady.Code != http.StatusOK {
+			t.Errorf("expected 200 from readyz with memory store, got %d", recReady.Code)
+		}
+		var readyBody map[string]any
+		if err := json.NewDecoder(recReady.Body).Decode(&readyBody); err != nil {
+			t.Fatalf("failed to decode readyz body: %v", err)
+		}
+		if readyBody["status"] != "ready" {
+			t.Errorf("expected status 'ready', got %v", readyBody["status"])
+		}
+	})
+
+	t.Run("nil task store maintains default health and readiness", func(t *testing.T) {
+		router, _ := setupHealthTestRouter(nil)
+
+		// healthz
+		reqHealth := httptest.NewRequest("GET", "/healthz", nil)
+		recHealth := httptest.NewRecorder()
+		router.ServeHTTP(recHealth, reqHealth)
+		if recHealth.Code != http.StatusOK {
+			t.Errorf("expected 200 from healthz without store, got %d", recHealth.Code)
+		}
+
+		// readyz
+		reqReady := httptest.NewRequest("GET", "/readyz", nil)
+		recReady := httptest.NewRecorder()
+		router.ServeHTTP(recReady, reqReady)
+		if recReady.Code != http.StatusOK {
+			t.Errorf("expected 200 from readyz without store, got %d", recReady.Code)
+		}
+	})
+}

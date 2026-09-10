@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -12,6 +13,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/config"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/model"
+	"github.com/Coder-in-a-shell/progo-a2a/pkg/storage"
 )
 
 func TestBinaryHelpFlag(t *testing.T) {
@@ -191,4 +196,184 @@ func TestServerRunAndGracefulShutdown(t *testing.T) {
 	if !strings.Contains(outStr, "server exited cleanly") && !strings.Contains(outStr, "shutting down gracefully") {
 		t.Errorf("expected graceful shutdown log message, got: %s", outStr)
 	}
+}
+
+func TestBuildTaskStore_MemoryCapacity(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("custom memory capacity bounds storage", func(t *testing.T) {
+		cfg := &config.Config{
+			Storage: config.StorageConfig{
+				Backend: "memory",
+				Memory: config.MemoryStorageConfig{
+					MaxTasks: 3,
+				},
+			},
+		}
+
+		store, closeFn, err := buildTaskStore(cfg)
+		if err != nil {
+			t.Fatalf("buildTaskStore failed: %v", err)
+		}
+		if store == nil {
+			t.Fatal("expected non-nil store")
+		}
+		if closeFn == nil {
+			t.Fatal("expected non-nil closeFn")
+		}
+		defer closeFn()
+
+		memStore, ok := store.(*storage.MemoryTaskStore)
+		if !ok {
+			t.Fatalf("expected *storage.MemoryTaskStore, got %T", store)
+		}
+
+		for i := 1; i <= 3; i++ {
+			taskID := fmt.Sprintf("task-%d", i)
+			err := memStore.Save(ctx, &model.TaskResponse{
+				TaskID:  taskID,
+				AgentID: "agent-1",
+				Status:  model.StatusCompleted,
+			})
+			if err != nil {
+				t.Fatalf("save %s failed: %v", taskID, err)
+			}
+		}
+
+		if memStore.Len() != 3 {
+			t.Errorf("expected len 3, got %d", memStore.Len())
+		}
+
+		// Save 4th task, should evict task-1 (oldest FIFO)
+		err = memStore.Save(ctx, &model.TaskResponse{
+			TaskID:  "task-4",
+			AgentID: "agent-1",
+			Status:  model.StatusCompleted,
+		})
+		if err != nil {
+			t.Fatalf("save task-4 failed: %v", err)
+		}
+
+		if memStore.Len() != 3 {
+			t.Errorf("expected len 3 after eviction, got %d", memStore.Len())
+		}
+
+		// task-1 should be evicted
+		_, err = memStore.Load(ctx, "task-1")
+		if err != storage.ErrTaskNotFound {
+			t.Errorf("expected ErrTaskNotFound for task-1, got %v", err)
+		}
+
+		// task-4 should exist
+		resp, err := memStore.Load(ctx, "task-4")
+		if err != nil {
+			t.Errorf("expected task-4 to be found, got %v", err)
+		}
+		if resp == nil || resp.TaskID != "task-4" {
+			t.Errorf("unexpected task response: %+v", resp)
+		}
+	})
+
+	t.Run("zero max_tasks defaults to DefaultMaxTasks", func(t *testing.T) {
+		cfg := &config.Config{
+			Storage: config.StorageConfig{
+				Backend: "memory",
+				Memory: config.MemoryStorageConfig{
+					MaxTasks: 0,
+				},
+			},
+		}
+
+		store, closeFn, err := buildTaskStore(cfg)
+		if err != nil {
+			t.Fatalf("buildTaskStore failed: %v", err)
+		}
+		defer closeFn()
+
+		memStore, ok := store.(*storage.MemoryTaskStore)
+		if !ok {
+			t.Fatalf("expected *storage.MemoryTaskStore, got %T", store)
+		}
+
+		err = memStore.Save(ctx, &model.TaskResponse{
+			TaskID:  "task-default",
+			AgentID: "agent-1",
+			Status:  model.StatusCompleted,
+		})
+		if err != nil {
+			t.Fatalf("save failed: %v", err)
+		}
+
+		resp, err := memStore.Load(ctx, "task-default")
+		if err != nil || resp.TaskID != "task-default" {
+			t.Errorf("expected task-default to load, got %v", err)
+		}
+	})
+}
+
+func TestBuildTaskStore_NoOpClose(t *testing.T) {
+	cfg := &config.Config{
+		Storage: config.StorageConfig{
+			Backend: "memory",
+		},
+	}
+
+	store, closeFn, err := buildTaskStore(cfg)
+	if err != nil {
+		t.Fatalf("buildTaskStore failed: %v", err)
+	}
+
+	// Calling closeFn multiple times must be safe and idempotent
+	closeFn()
+	closeFn()
+
+	// Store should remain functional
+	err = store.Save(context.Background(), &model.TaskResponse{
+		TaskID:  "task-after-close",
+		AgentID: "agent-1",
+		Status:  model.StatusCompleted,
+	})
+	if err != nil {
+		t.Errorf("expected store to work after memory close, got %v", err)
+	}
+}
+
+func TestBuildTaskStore_ErrorsAndSanitization(t *testing.T) {
+	t.Run("nil config returns error", func(t *testing.T) {
+		_, _, err := buildTaskStore(nil)
+		if err == nil {
+			t.Fatal("expected error for nil config, got nil")
+		}
+	})
+
+	t.Run("unsupported backend returns error", func(t *testing.T) {
+		cfg := &config.Config{
+			Storage: config.StorageConfig{
+				Backend: "unsupported-storage",
+			},
+		}
+		_, _, err := buildTaskStore(cfg)
+		if err == nil {
+			t.Fatal("expected error for unsupported backend, got nil")
+		}
+		if !strings.Contains(err.Error(), "unsupported storage backend") {
+			t.Errorf("expected error mentioning unsupported storage backend, got: %s", err.Error())
+		}
+	})
+
+	t.Run("sanitizeStorageError redacts DSN and password", func(t *testing.T) {
+		secretDSN := "postgres://admin_user:ultra_secret_pw@10.0.0.1:5432/proddb"
+		rawErr := fmt.Errorf("failed connecting to %s: connection refused", secretDSN)
+		sanitized := sanitizeStorageError(rawErr, secretDSN)
+
+		if strings.Contains(sanitized.Error(), "ultra_secret_pw") {
+			t.Errorf("sanitized error leaked password: %s", sanitized.Error())
+		}
+		if strings.Contains(sanitized.Error(), secretDSN) {
+			t.Errorf("sanitized error leaked raw DSN: %s", sanitized.Error())
+		}
+		if !strings.Contains(sanitized.Error(), "[REDACTED]") {
+			t.Errorf("sanitized error missing [REDACTED]: %s", sanitized.Error())
+		}
+	})
 }

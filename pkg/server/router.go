@@ -65,6 +65,12 @@ func SetupRouter(cfg *config.Config, disp *dispatcher.Dispatcher, opts ...Router
 	}
 	restH := NewRESTHandler(cfg, disp, a2aH, rc.metricsRegistry)
 	healthH := NewHealthHandler(cfg, disp)
+	if rc.logger != nil {
+		healthH.SetLogger(rc.logger)
+	}
+	if hc, ok := rc.taskStore.(storage.HealthChecker); ok && hc != nil {
+		healthH.SetHealthChecker(hc)
+	}
 
 	// Standard A2A Routes
 	mux.HandleFunc("GET /a2a/v1/agents", a2aH.ListAgents)

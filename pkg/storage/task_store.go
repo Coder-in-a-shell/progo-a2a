@@ -28,3 +28,8 @@ type TaskStore interface {
 	// Returns ErrTaskNotFound if the task does not exist.
 	Load(ctx context.Context, id string) (*model.TaskResponse, error)
 }
+
+// HealthChecker defines an interface for storage backends that support health checking via Ping.
+type HealthChecker interface {
+	Ping(ctx context.Context) error
+}
