@@ -301,7 +301,7 @@ func AuthMiddleware(cfg *config.SecurityConfig) func(http.Handler) http.Handler 
 }
 
 func isPublicEndpoint(p string) bool {
-	return p == "/healthz" || p == "/readyz" || p == "/metrics"
+	return p == "/healthz" || p == "/readyz" || p == "/metrics" || p == "/console" || strings.HasPrefix(p, "/console/")
 }
 
 func extractAPIKey(r *http.Request) string {

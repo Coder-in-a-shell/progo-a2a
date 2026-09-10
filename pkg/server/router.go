@@ -88,6 +88,14 @@ func SetupRouter(cfg *config.Config, disp *dispatcher.Dispatcher, opts ...Router
 	mux.HandleFunc("GET /readyz", healthH.Readyz)
 	mux.Handle("GET /metrics", rc.metricsRegistry.Handler())
 
+	// Embedded read-only operator console. The shell is public so operators can
+	// enter a session-only API key; protected data continues through API auth.
+	mux.HandleFunc("GET /console", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/console/", http.StatusMovedPermanently)
+	})
+	mux.Handle("GET /console/api/bootstrap", ConsoleBootstrapHandler(cfg))
+	mux.Handle("GET /console/", http.StripPrefix("/console", ConsoleHandler()))
+
 	// Build middleware chain: Recovery -> RequestID -> Metrics -> Logging -> Auth -> Handler
 	var securityCfg *config.SecurityConfig
 	if cfg != nil {

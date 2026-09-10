@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f7fb">
+  <title>ProGoA2A Control</title>
+  <link rel="stylesheet" href="app.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="app-shell">
+    <aside class="rail" aria-label="Primary navigation">
+      <a class="brand" href="#overview" aria-label="ProGoA2A Control home">
+        <span class="brand-mark" aria-hidden="true"><span>P</span></span>
+        <span class="brand-copy"><strong>ProGo</strong><small>A2A CONTROL</small></span>
+      </a>
+
+      <nav class="nav-stack">
+        <a class="nav-item active" href="#overview" data-section="overview">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 5.5h6.5V12H4zM13.5 5.5H20V9h-6.5zM13.5 12H20v6.5h-6.5zM4 15h6.5v3.5H4z"/></svg>
+          <span>Overview</span>
+        </a>
+        <a class="nav-item" href="#agents" data-section="agents">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="7" cy="7" r="2.5"/><circle cx="17" cy="7" r="2.5"/><circle cx="12" cy="17" r="2.5"/><path d="M9.1 8.4 10.9 15M14.9 8.4 13.1 15M9.4 7h5.2"/></svg>
+          <span>Agents</span>
+        </a>
+        <a class="nav-item" href="#traffic" data-section="traffic">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 17V9m5 8V5m6 12v-6m5 6V7"/></svg>
+          <span>Traffic</span>
+        </a>
+      </nav>
+
+      <div class="rail-foot">
+        <a class="docs-link" href="https://coder-in-a-shell.github.io/progo-a2a/" target="_blank" rel="noreferrer">
+          <span>Documentation</span>
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M8 16 16 8m-6 0h6v6"/></svg>
+        </a>
+        <div class="build-label"><span class="live-dot"></span><span>Gateway online</span></div>
+      </div>
+    </aside>
+
+    <main id="main" class="main-canvas">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">OPERATOR WORKSPACE</p>
+          <h1>Good routing starts with a clear signal.</h1>
+        </div>
+        <div class="topbar-actions">
+          <span class="environment-pill"><span></span><span id="environment-label">LIVE GATEWAY</span></span>
+          <button id="connect-button" class="button button-secondary" type="button">Connect key</button>
+          <button id="refresh-button" class="icon-button" type="button" aria-label="Refresh console data" title="Refresh">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <section id="overview" class="route-stage" aria-labelledby="route-heading">
+        <div class="stage-heading">
+          <div>
+            <p class="section-kicker">SYSTEM PULSE</p>
+            <h2 id="route-heading">Your agent network, right now</h2>
+          </div>
+          <p id="sync-label" class="sync-label">Connecting to gateway…</p>
+        </div>
+
+        <div class="topology-card">
+          <div class="topology-copy">
+            <span id="system-badge" class="state-badge state-loading">CHECKING</span>
+            <p id="system-message">Reading liveness, readiness, and route data.</p>
+          </div>
+          <div class="route-map" aria-label="Gateway-to-agent topology">
+            <div class="gateway-node">
+              <span class="gateway-orbit" aria-hidden="true"></span>
+              <span class="gateway-glyph" aria-hidden="true">P</span>
+              <span><strong>ProGoA2A</strong><small>ROUTER</small></span>
+            </div>
+            <div class="route-line" aria-hidden="true"><span class="route-pulse pulse-one"></span><span class="route-pulse pulse-two"></span></div>
+            <div id="agent-nodes" class="agent-nodes" aria-live="polite">
+              <div class="agent-node skeleton-node"><span></span><div><strong>Discovering agents</strong><small>PLEASE WAIT</small></div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="status-strip" aria-label="Gateway status summary">
+          <div class="status-cell"><span>LIVENESS</span><strong id="liveness-value">—</strong><small id="liveness-detail">Checking</small></div>
+          <div class="status-cell"><span>READINESS</span><strong id="readiness-value">—</strong><small id="readiness-detail">Checking</small></div>
+          <div class="status-cell"><span>REQUESTS</span><strong id="requests-value">—</strong><small>Observed total</small></div>
+          <div class="status-cell"><span>AVG LATENCY</span><strong id="latency-value">—</strong><small>Across observed routes</small></div>
+          <div class="status-cell"><span>ACTIVE STREAMS</span><strong id="streams-value">—</strong><small>Open right now</small></div>
+        </div>
+      </section>
+
+      <section id="agents" class="content-section" aria-labelledby="agents-heading">
+        <div class="section-heading">
+          <div><p class="section-kicker">AGENT FLEET</p><h2 id="agents-heading">Connected capabilities</h2></div>
+          <span id="agent-count" class="count-label">0 agents</span>
+        </div>
+        <div id="auth-notice" class="auth-notice hidden" role="status">
+          <div><strong>Agent inventory is protected.</strong><span>Connect an API key to see the agents available to you.</span></div>
+          <button id="notice-connect-button" class="button button-primary" type="button">Connect key</button>
+        </div>
+        <div id="agent-grid" class="agent-grid" aria-live="polite">
+          <article class="agent-card loading-card"><div class="loading-line wide"></div><div class="loading-line"></div><div class="loading-line short"></div></article>
+          <article class="agent-card loading-card"><div class="loading-line wide"></div><div class="loading-line"></div><div class="loading-line short"></div></article>
+          <article class="agent-card loading-card"><div class="loading-line wide"></div><div class="loading-line"></div><div class="loading-line short"></div></article>
+        </div>
+      </section>
+
+      <section id="traffic" class="content-section traffic-section" aria-labelledby="traffic-heading">
+        <div class="section-heading">
+          <div><p class="section-kicker">ROUTE VOLUME</p><h2 id="traffic-heading">What the gateway has handled</h2></div>
+          <div class="legend"><span><i class="legend-ok"></i>Successful</span><span><i class="legend-warn"></i>Attention</span></div>
+        </div>
+        <div class="traffic-panel">
+          <div class="traffic-header"><span>ROUTE</span><span>STATUS</span><span>SHARE</span><span>COUNT</span></div>
+          <div id="traffic-list" class="traffic-list" aria-live="polite">
+            <div class="empty-state"><span class="empty-glyph">↗</span><div><strong>No request traffic yet</strong><p>Routes appear here after the gateway handles requests.</p></div></div>
+          </div>
+        </div>
+        <div class="reliability-note">
+          <div class="note-mark" aria-hidden="true">i</div>
+          <div><strong>Operational boundary</strong><p>This console is read-only. Durable job submission, cancellation controls, and tenant administration will arrive with the management API.</p></div>
+        </div>
+      </section>
+
+      <footer><span>ProGoA2A Control</span><span>Read-only operator preview · data refreshes every 15 seconds</span></footer>
+    </main>
+  </div>
+
+  <dialog id="key-dialog" class="key-dialog" aria-labelledby="dialog-title">
+    <form id="key-form" method="dialog">
+      <button id="dialog-close" class="dialog-close" type="button" aria-label="Close">×</button>
+      <p class="section-kicker">SECURE CONNECTION</p>
+      <h2 id="dialog-title">Connect your gateway key</h2>
+      <p>The key stays in this browser tab and is only sent to this gateway.</p>
+      <label for="api-key">API key</label>
+      <input id="api-key" name="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste a bearer or X-API-Key value">
+      <div id="key-error" class="form-error" role="alert"></div>
+      <div class="dialog-actions">
+        <button id="clear-key" class="button button-secondary" type="button">Clear key</button>
+        <button class="button button-primary" type="submit">Connect gateway</button>
+      </div>
+    </form>
+  </dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

@@ -24,6 +24,14 @@ Otherwise it returns `503` with `status: "not ready"`. It does not probe configu
 
 Both health endpoints, plus `/metrics`, bypass API-key authentication.
 
+## Operator console
+
+`GET /console/` serves a responsive, read-only operator console directly from the Go binary. It visualizes liveness, readiness, configured agents, request volume, average observed latency, and active streams using the existing APIs and Prometheus exposition.
+
+The console shell is public so it can load before authentication. Its bootstrap endpoint exposes only whether authentication is required, the runtime role, the storage backend name, and the refresh interval. It never returns credentials, agent configuration secrets, or upstream endpoints. When API-key security is enabled, agent inventory remains protected; an operator can connect a key that is kept in `sessionStorage` for the current browser tab and sent only to same-origin gateway APIs.
+
+The console does not currently submit or cancel durable jobs, modify configuration, or administer tenants. Those actions require a separately authorized management API.
+
 ## Prometheus exposition
 
 `GET /metrics` returns Prometheus text format from an in-process collector.

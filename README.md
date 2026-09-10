@@ -111,6 +111,7 @@ curl -N -sS http://localhost:8080/a2a/v1/tasks/stream \
 | `POST` | `/api/v1/invoke/{agent_id}` | Direct synchronous invocation |
 | `POST` | `/api/v1/stream/{agent_id}` | Direct streaming invocation |
 | `GET` | `/healthz`, `/readyz`, `/metrics` | Public operational routes |
+| `GET` | `/console/` | Embedded read-only operator console |
 
 ## Runtime roles
 
