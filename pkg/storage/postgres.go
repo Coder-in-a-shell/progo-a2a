@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,12 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-//go:embed migrations/001_create_task_results.sql
-var defaultMigrationSQL string
-
 const (
-	migrationLockID = int64(0x5461736b53746f72) // "TaskStor"
-
 	upsertTaskResultsSQL = `
 INSERT INTO task_results (lookup_id, task_id, agent_id, status, response, created_at, updated_at)
 SELECT
@@ -146,24 +140,8 @@ func (s *PostgresTaskStore) Migrate(ctx context.Context) error {
 		return fmt.Errorf("postgres task store: migrate: pool is nil")
 	}
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("postgres task store: migrate: begin transaction: %w", s.redactErr(err))
-	}
-	defer func() {
-		_ = tx.Rollback(ctx)
-	}()
-
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", migrationLockID); err != nil {
-		return fmt.Errorf("postgres task store: migrate: acquire advisory lock: %w", s.redactErr(err))
-	}
-
-	if _, err := tx.Exec(ctx, defaultMigrationSQL); err != nil {
-		return fmt.Errorf("postgres task store: migrate: execute migration: %w", s.redactErr(err))
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("postgres task store: migrate: commit transaction: %w", s.redactErr(err))
+	if err := runMigrations(ctx, s.pool, s.redactTokens); err != nil {
+		return fmt.Errorf("postgres task store: migrate: %w", err)
 	}
 
 	return nil
