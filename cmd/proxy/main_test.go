@@ -114,6 +114,13 @@ func TestServerRunAndGracefulShutdown(t *testing.T) {
 		"-port", fmt.Sprintf("%d", port),
 		"-log-level", "debug",
 	)
+	cmd.Env = append(os.Environ(),
+		"LANGGRAPH_API_KEY=test-langgraph-key",
+		"CREWAI_API_TOKEN=test-crewai-token",
+		"AUTOGEN_API_KEY=test-autogen-key",
+		"OPENAI_API_KEY=test-openai-key",
+		"ENTERPRISE_AUTH_TOKEN=test-enterprise-token",
+	)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -140,6 +147,7 @@ func TestServerRunAndGracefulShutdown(t *testing.T) {
 
 	if !ready {
 		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 		t.Fatalf("server did not become healthy in time. Stdout: %s, Stderr: %s", stdout.String(), stderr.String())
 	}
 
