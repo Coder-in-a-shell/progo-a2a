@@ -133,6 +133,43 @@ func (d *Dispatcher) Dispatch(ctx context.Context, task *model.TaskRequest) (*mo
 	return d.dispatchWithFallback(ctx, task, targetAgent, visited)
 }
 
+// DispatchSingleAttempt executes exactly one downstream request with no
+// dispatcher retry or fallback. Durable workers use this entry point so the
+// job ledger is the sole authority for retry attempts and backoff.
+func (d *Dispatcher) DispatchSingleAttempt(ctx context.Context, task *model.TaskRequest) (*model.TaskResponse, error) {
+	targetAgent, err := d.resolveAgent(task)
+	if err != nil {
+		return nil, err
+	}
+	agent := *targetAgent
+	agent.Retries = 0
+	agent.FallbackAgentIDs = nil
+
+	resp, err := d.invokeAgentWithRetries(ctx, task, &agent)
+	if err == nil {
+		return resp, nil
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
+		return nil, &model.A2AError{
+			Code:      "DOWNSTREAM_TIMEOUT",
+			Message:   "Agent timed out",
+			AgentID:   agent.ID,
+			Status:    http.StatusGatewayTimeout,
+			Timestamp: time.Now().UTC(),
+		}
+	}
+	return nil, &model.A2AError{
+		Code:      "DOWNSTREAM_UNAVAILABLE",
+		Message:   "Downstream agent invocation failed",
+		AgentID:   agent.ID,
+		Status:    http.StatusBadGateway,
+		Timestamp: time.Now().UTC(),
+	}
+}
+
 // DispatchStream executes a streaming task with per-agent timeout, exponential backoff retries,
 // and automatic fallback cascading before the stream is established.
 func (d *Dispatcher) DispatchStream(ctx context.Context, task *model.TaskRequest, emitter stream.Emitter) error {

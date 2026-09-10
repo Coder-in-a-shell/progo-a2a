@@ -91,6 +91,12 @@ type JobRepository interface {
 	// Leased or running jobs record cancellation intent. Terminal jobs remain terminal.
 	CancelJob(ctx context.Context, tenantID, jobID string) error
 
+	// AcknowledgeCancellation transitions a leased or running job with cancellation intent to canceled,
+	// clears lease fields, and fences against stale workers.
+	// Returns ErrJobNotFound if the job does not exist for the tenant.
+	// Returns ErrLeaseLost if the lease fence is invalid, expired, or cancellation was not requested.
+	AcknowledgeCancellation(ctx context.Context, fence model.LeaseFence) error
+
 	// ReclaimExpiredLeases scans expired leased and running jobs up to batchSize.
 	// Cancellation-requested jobs become canceled, retryable jobs return to queued, and exhausted jobs become dead_letter.
 	// Increments lease_token to fence stale workers and clears lease fields.

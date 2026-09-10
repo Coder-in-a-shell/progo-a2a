@@ -12,11 +12,13 @@ ProGoA2A is configured via a single YAML file. By default the binary loads `conf
 ./progo-a2a -config /etc/progo-a2a/config.yaml
 ```
 
-The file has four top-level sections:
+The file has top-level configuration options and sections:
 
-| Section | Required | Purpose |
+| Field / Section | Required | Purpose |
 |---|---|---|
+| `role` | No | Runtime execution mode (`api`, `worker`, or `all`; default `api`) |
 | `server` | Yes | HTTP listener settings |
+| `worker` | No | Background worker settings for durable jobs |
 | `storage` | No | Pluggable task storage (`memory` or `postgres`) |
 | `security` | No | API-key authentication & RBAC |
 | `agents` | Yes | Upstream agent definitions |
@@ -46,6 +48,58 @@ server:
 
 !!! tip "Sizing `write_timeout_seconds`"
     A request can consume multiple agent attempts plus backoff and fallback attempts. Set this timeout from your end-to-end latency budget, not only the largest single `timeout_seconds` value.
+
+---
+
+## Runtime Roles (`role`)
+
+The top-level `role` field configures the execution mode of the binary:
+
+```yaml
+role: "api" # "api" | "worker" | "all" (default: "api")
+```
+
+| Role | Description | Requirements |
+|---|---|---|
+| `api` | Starts only the HTTP server exposing client endpoints. Preserves existing server-only behavior. | Compatible with `memory` or `postgres` storage. |
+| `worker` | Starts only background worker engine processing durable jobs from PostgreSQL. | Requires `storage.backend: postgres`. |
+| `all` | Starts both HTTP server and background worker engine in a single process. | Requires `storage.backend: postgres` (shares a single pool). |
+
+Override the role at runtime with the `-role` CLI flag:
+```bash
+./progo-a2a -config config/progo-a2a.yaml -role worker
+```
+
+---
+
+## `worker` Section
+
+Configures the durable worker engine when running in `worker` or `all` roles.
+
+```yaml
+worker:
+  worker_id: "worker-prod-1"         # optional stable worker identifier (non-empty cannot be whitespace-only)
+  concurrency: 10                     # integer, 1 to 1000 (default: 10)
+  batch_size: 5                       # integer, 1 to concurrency (default: 5)
+  poll_interval_milliseconds: 1000    # integer, 1 to 600000 (default: 1000)
+  lease_duration_seconds: 30          # integer, 2 to 86400 (default: 30)
+  renewal_interval_seconds: 10        # integer, > 0 and <= lease_duration / 2 (default: 10)
+  retry_backoff_seconds: 15           # integer, > 0 and <= 604800 (default: 15)
+  drain_timeout_seconds: 30           # integer, 1 to 3600 (default: 30)
+```
+
+| Field | Type | Default | Bounds / Constraints | Description |
+|---|---|---|---|---|
+| `worker_id` | string | `""` | Maximum 256 characters; cannot be whitespace-only | Optional stable worker identifier. If omitted, generated as `hostname-pid-timestamp`. |
+| `concurrency` | integer | `10` | `1` to `1000` | Maximum number of concurrent jobs processed simultaneously. |
+| `batch_size` | integer | `5` | `1` to `min(concurrency, 1000)` | Maximum jobs claimed per lease acquisition attempt. |
+| `poll_interval_milliseconds` | integer | `1000` | `1` to `600000` (10m) | Polling sleep interval when no queued jobs are available. |
+| `lease_duration_seconds` | integer | `30` | `2` to `86400` (24h) | Distributed lease duration claimed in database time. The two-second minimum permits a positive integer renewal interval at or below half the lease. |
+| `renewal_interval_seconds` | integer | `10` | `> 0` and `<= lease_duration_seconds / 2` | Heartbeat interval at which running job leases are extended (must be at most half the lease duration). |
+| `retry_backoff_seconds` | integer | `15` | `> 0` and `<= 604800` (7d) | Database-time delay before a retryable job becomes eligible again. Expired-lease sweeps run independently at the renewal interval. |
+| `drain_timeout_seconds` | integer | `30` | `1` to `3600` (1h) | Maximum duration allowed for active jobs to finish during graceful shutdown before canceling contexts. |
+
+Each durable job lease makes one downstream invocation. The worker does not use the legacy synchronous dispatcher's per-agent retry or fallback loop; durable retries occur only through `max_attempts` and database-time `retry_backoff_seconds`.
 
 ---
 

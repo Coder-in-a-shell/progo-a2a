@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +20,44 @@ import (
 	"github.com/Coder-in-a-shell/progo-a2a/pkg/model"
 	"github.com/Coder-in-a-shell/progo-a2a/pkg/storage"
 )
+
+func writeTestConfig(t *testing.T, storageBackend string, extraYAML string) string {
+	t.Helper()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+
+	storageYAML := `storage:
+  backend: memory
+`
+	if storageBackend == "postgres" {
+		storageYAML = `storage:
+  backend: postgres
+  postgres:
+    dsn: "postgres://user:pass@localhost:5432/testdb"
+`
+	}
+
+	content := fmt.Sprintf(`server:
+  host: "127.0.0.1"
+  port: 8080
+security:
+  enabled: false
+agents:
+  - id: "test-agent"
+    name: "Test Agent"
+    type: "openai"
+    endpoint: "http://127.0.0.1:8080/dummy"
+    auth:
+      type: "none"
+%s
+%s
+`, storageYAML, extraYAML)
+
+	if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
+		t.Fatalf("failed to write test config file: %v", err)
+	}
+	return configPath
+}
 
 func TestBinaryHelpFlag(t *testing.T) {
 	cmd := exec.Command("go", "run", "main.go", "-help")
@@ -37,6 +77,9 @@ func TestBinaryHelpFlag(t *testing.T) {
 	}
 	if !strings.Contains(outStr, "-log-level") {
 		t.Errorf("expected -log-level flag in help output, got: %s", outStr)
+	}
+	if !strings.Contains(outStr, "-role") {
+		t.Errorf("expected -role flag in help output, got: %s", outStr)
 	}
 }
 
@@ -113,18 +156,13 @@ func TestServerRunAndGracefulShutdown(t *testing.T) {
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
 
+	testCfg := writeTestConfig(t, "memory", "")
+
 	cmd := exec.Command(binPath,
-		"-config", "../../config/a2a-proxy.example.yaml",
+		"-config", testCfg,
 		"-host", "127.0.0.1",
 		"-port", fmt.Sprintf("%d", port),
 		"-log-level", "debug",
-	)
-	cmd.Env = append(os.Environ(),
-		"LANGGRAPH_API_KEY=test-langgraph-key",
-		"CREWAI_API_TOKEN=test-crewai-token",
-		"AUTOGEN_API_KEY=test-autogen-key",
-		"OPENAI_API_KEY=test-openai-key",
-		"ENTERPRISE_AUTH_TOKEN=test-enterprise-token",
 	)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -156,12 +194,11 @@ func TestServerRunAndGracefulShutdown(t *testing.T) {
 		t.Fatalf("server did not become healthy in time. Stdout: %s, Stderr: %s", stdout.String(), stderr.String())
 	}
 
-	// Verify /a2a/v1/agents endpoint works with auth
+	// Verify /a2a/v1/agents endpoint works
 	req, err := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/a2a/v1/agents", port), nil)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
-	req.Header.Set("Authorization", "Bearer admin-secret-key-12345")
 	agentsResp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("failed to get agents: %v", err)
@@ -374,6 +411,371 @@ func TestBuildTaskStore_ErrorsAndSanitization(t *testing.T) {
 		}
 		if !strings.Contains(sanitized.Error(), "[REDACTED]") {
 			t.Errorf("sanitized error missing [REDACTED]: %s", sanitized.Error())
+		}
+	})
+}
+
+func TestRun_OrchestrationAndRoles(t *testing.T) {
+	t.Run("api role startup and graceful shutdown", func(t *testing.T) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to listen on free port: %v", err)
+		}
+		port := ln.Addr().(*net.TCPAddr).Port
+		ln.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		testCfg := writeTestConfig(t, "memory", "")
+
+		var stdout, stderr bytes.Buffer
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- run(ctx, []string{
+				"-config", testCfg,
+				"-host", "127.0.0.1",
+				"-port", fmt.Sprintf("%d", port),
+				"-role", "api",
+				"-log-level", "debug",
+			}, &stdout, &stderr)
+		}()
+
+		// Poll healthz
+		client := &http.Client{Timeout: 500 * time.Millisecond}
+		url := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
+		ready := false
+		for i := 0; i < 40; i++ {
+			time.Sleep(50 * time.Millisecond)
+			resp, err := client.Get(url)
+			if err == nil {
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					ready = true
+					break
+				}
+			}
+		}
+
+		if !ready {
+			cancel()
+			t.Fatalf("server failed to start on port %d, stderr: %s", port, stderr.String())
+		}
+
+		// Trigger in-process graceful shutdown
+		cancel()
+
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("run returned error on graceful shutdown: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for in-process graceful shutdown")
+		}
+	})
+
+	t.Run("missing config file returns error", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		err := run(context.Background(), []string{"-config", "nonexistent.yaml"}, &stdout, &stderr)
+		if err == nil {
+			t.Fatal("expected error for nonexistent config, got nil")
+		}
+	})
+
+	t.Run("invalid flag returns error", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		err := run(context.Background(), []string{"-unsupported-flag-xyz"}, &stdout, &stderr)
+		if err == nil {
+			t.Fatal("expected error for unsupported flag, got nil")
+		}
+	})
+
+	t.Run("invalid role override returns error", func(t *testing.T) {
+		testCfg := writeTestConfig(t, "memory", "")
+		var stdout, stderr bytes.Buffer
+		err := run(context.Background(), []string{
+			"-config", testCfg,
+			"-role", "invalid-role",
+		}, &stdout, &stderr)
+		if err == nil {
+			t.Fatal("expected error for invalid role, got nil")
+		}
+		if !strings.Contains(err.Error(), "must be one of api, worker, all") {
+			t.Errorf("expected role error message, got: %v", err)
+		}
+	})
+
+	t.Run("worker role with memory storage returns error", func(t *testing.T) {
+		testCfg := writeTestConfig(t, "memory", "")
+		var stdout, stderr bytes.Buffer
+		err := run(context.Background(), []string{
+			"-config", testCfg,
+			"-role", "worker",
+		}, &stdout, &stderr)
+		if err == nil {
+			t.Fatal("expected error for worker role with memory storage, got nil")
+		}
+		if !strings.Contains(err.Error(), "requires postgres storage backend") {
+			t.Errorf("expected storage requirement error, got: %v", err)
+		}
+	})
+
+	t.Run("all role with memory storage returns error", func(t *testing.T) {
+		testCfg := writeTestConfig(t, "memory", "")
+		var stdout, stderr bytes.Buffer
+		err := run(context.Background(), []string{
+			"-config", testCfg,
+			"-role", "all",
+		}, &stdout, &stderr)
+		if err == nil {
+			t.Fatal("expected error for all role with memory storage, got nil")
+		}
+		if !strings.Contains(err.Error(), "requires postgres storage backend") {
+			t.Errorf("expected storage requirement error, got: %v", err)
+		}
+	})
+}
+
+type fakeServerComponent struct {
+	startFunc    func() error
+	shutdownFunc func(ctx context.Context) error
+}
+
+func (f *fakeServerComponent) Start() error {
+	if f.startFunc != nil {
+		return f.startFunc()
+	}
+	return nil
+}
+
+func (f *fakeServerComponent) Shutdown(ctx context.Context) error {
+	if f.shutdownFunc != nil {
+		return f.shutdownFunc(ctx)
+	}
+	return nil
+}
+
+type fakeWorkerComponent struct {
+	runFunc func(ctx context.Context) error
+}
+
+func (f *fakeWorkerComponent) Run(ctx context.Context) error {
+	if f.runFunc != nil {
+		return f.runFunc(ctx)
+	}
+	return nil
+}
+
+func TestRunAllComponents_CompletionSignaling(t *testing.T) {
+	t.Run("normal shutdown does not wait for drain timeout", func(t *testing.T) {
+		serverClosed := make(chan struct{})
+		srv := &fakeServerComponent{
+			startFunc: func() error {
+				<-serverClosed
+				return http.ErrServerClosed
+			},
+			shutdownFunc: func(ctx context.Context) error {
+				close(serverClosed)
+				return nil
+			},
+		}
+
+		eng := &fakeWorkerComponent{
+			runFunc: func(ctx context.Context) error {
+				<-ctx.Done()
+				return nil // normal clean exit
+			},
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		errCh := make(chan error, 1)
+		start := time.Now()
+
+		go func() {
+			// drain timeout configured as 30s; normal shutdown must NOT wait 35s!
+			errCh <- runAllComponents(ctx, srv, eng, 30, nil)
+		}()
+
+		time.Sleep(20 * time.Millisecond)
+		cancel() // trigger shutdown
+
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("expected nil error on normal shutdown, got: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("normal shutdown waited longer than 2s; completion signaling is blocked or waited for drain timeout")
+		}
+
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Errorf("normal shutdown took %v, expected < 2s", elapsed)
+		}
+	})
+
+	t.Run("unexpected server error propagates immediately", func(t *testing.T) {
+		srv := &fakeServerComponent{
+			startFunc: func() error {
+				return errors.New("port already bound")
+			},
+			shutdownFunc: func(ctx context.Context) error {
+				return nil
+			},
+		}
+
+		var workerCanceled atomic.Bool
+		eng := &fakeWorkerComponent{
+			runFunc: func(ctx context.Context) error {
+				<-ctx.Done()
+				workerCanceled.Store(true)
+				return nil
+			},
+		}
+
+		ctx := context.Background()
+		err := runAllComponents(ctx, srv, eng, 5, nil)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "port already bound") {
+			t.Errorf("expected error containing 'port already bound', got: %v", err)
+		}
+		if !workerCanceled.Load() {
+			t.Error("expected worker context to be canceled when server failed")
+		}
+	})
+
+	t.Run("unexpected server nil exit propagates", func(t *testing.T) {
+		srv := &fakeServerComponent{
+			startFunc: func() error {
+				return nil // unexpected early exit with nil
+			},
+			shutdownFunc: func(ctx context.Context) error {
+				return nil
+			},
+		}
+
+		eng := &fakeWorkerComponent{
+			runFunc: func(ctx context.Context) error {
+				<-ctx.Done()
+				return nil
+			},
+		}
+
+		err := runAllComponents(context.Background(), srv, eng, 5, nil)
+		if err == nil {
+			t.Fatal("expected error for unexpected server nil exit, got nil")
+		}
+		if !strings.Contains(err.Error(), "server exited unexpectedly") {
+			t.Errorf("expected server exited unexpectedly error, got: %v", err)
+		}
+	})
+
+	t.Run("unexpected worker error propagates immediately", func(t *testing.T) {
+		serverClosed := make(chan struct{})
+		var serverShutdownCalled atomic.Bool
+		srv := &fakeServerComponent{
+			startFunc: func() error {
+				<-serverClosed
+				return http.ErrServerClosed
+			},
+			shutdownFunc: func(ctx context.Context) error {
+				serverShutdownCalled.Store(true)
+				close(serverClosed)
+				return nil
+			},
+		}
+
+		eng := &fakeWorkerComponent{
+			runFunc: func(ctx context.Context) error {
+				return errors.New("fatal database connection failure")
+			},
+		}
+
+		err := runAllComponents(context.Background(), srv, eng, 5, nil)
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "fatal database connection failure") {
+			t.Errorf("expected error containing 'fatal database connection failure', got: %v", err)
+		}
+		if !serverShutdownCalled.Load() {
+			t.Error("expected server shutdown to be invoked when worker failed")
+		}
+	})
+
+	t.Run("unexpected worker nil exit propagates", func(t *testing.T) {
+		serverClosed := make(chan struct{})
+		srv := &fakeServerComponent{
+			startFunc: func() error {
+				<-serverClosed
+				return http.ErrServerClosed
+			},
+			shutdownFunc: func(ctx context.Context) error {
+				close(serverClosed)
+				return nil
+			},
+		}
+
+		eng := &fakeWorkerComponent{
+			runFunc: func(ctx context.Context) error {
+				return nil // unexpected early worker exit with nil
+			},
+		}
+
+		err := runAllComponents(context.Background(), srv, eng, 5, nil)
+		if err == nil {
+			t.Fatal("expected error for unexpected worker nil exit, got nil")
+		}
+		if !strings.Contains(err.Error(), "worker exited unexpectedly") {
+			t.Errorf("expected worker exited unexpectedly error, got: %v", err)
+		}
+	})
+}
+
+func TestBuildStorageHelpers_Validation(t *testing.T) {
+	t.Run("nil config returns error for JobRepository", func(t *testing.T) {
+		_, _, err := buildJobRepository(nil)
+		if err == nil {
+			t.Fatal("expected error for nil config, got nil")
+		}
+	})
+
+	t.Run("nil config returns error for StorageBundle", func(t *testing.T) {
+		_, _, err := buildStorageBundle(nil)
+		if err == nil {
+			t.Fatal("expected error for nil config, got nil")
+		}
+	})
+
+	t.Run("blank DSN returns error for JobRepository", func(t *testing.T) {
+		cfg := &config.Config{
+			Storage: config.StorageConfig{
+				Backend: "postgres",
+				Postgres: config.PostgresStorageConfig{
+					DSN: "",
+				},
+			},
+		}
+		_, _, err := buildJobRepository(cfg)
+		if err == nil {
+			t.Fatal("expected error for blank DSN, got nil")
+		}
+	})
+
+	t.Run("blank DSN returns error for StorageBundle", func(t *testing.T) {
+		cfg := &config.Config{
+			Storage: config.StorageConfig{
+				Backend: "postgres",
+				Postgres: config.PostgresStorageConfig{
+					DSN: "",
+				},
+			},
+		}
+		_, _, err := buildStorageBundle(cfg)
+		if err == nil {
+			t.Fatal("expected error for blank DSN, got nil")
 		}
 	})
 }

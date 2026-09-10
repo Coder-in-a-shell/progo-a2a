@@ -6,6 +6,11 @@
 # Environment variables using the ${VAR_NAME} syntax are automatically expanded.
 # ==============================================================================
 
+# Runtime role: "api" (default), "worker", or "all".
+# Empty/omitted role defaults to "api", preserving server-only behavior.
+# Note: "worker" and "all" roles require PostgreSQL storage backend.
+role: "api"
+
 # Server configuration
 server:
   host: "0.0.0.0"
@@ -13,6 +18,17 @@ server:
   read_timeout_seconds: 30
   write_timeout_seconds: 120
   idle_timeout_seconds: 60
+
+# Background worker configuration (active when role is "worker" or "all")
+worker:
+  # worker_id: ""                       # Optional stable worker identifier; defaults to host-pid-timestamp
+  concurrency: 10                       # Maximum concurrent jobs processed (bounds: 1 to 1000)
+  batch_size: 5                         # Maximum jobs claimed per lease acquisition (bounds: 1 to concurrency)
+  poll_interval_milliseconds: 1000      # Polling interval when queue is empty (integer ms)
+  lease_duration_seconds: 30            # Distributed lease duration (integer seconds)
+  renewal_interval_seconds: 10          # Heartbeat renewal interval (must be at most half of lease duration)
+  retry_backoff_seconds: 15             # Database-time delay before a retryable job is eligible again
+  drain_timeout_seconds: 30             # Graceful shutdown drain deadline before execution cancellation
 
 # Storage configuration
 storage:

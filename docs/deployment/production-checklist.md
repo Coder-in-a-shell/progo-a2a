@@ -17,8 +17,9 @@ ProGoA2A has solid foundations, but the current repository is an early-stage gat
 - [ ] Size `write_timeout_seconds` for total attempts, backoff, and fallbacks.
 - [ ] Keep intermediary idle timeouts above expected SSE quiet periods; the app emits no heartbeats.
 - [ ] Configure fallbacks only between agents with compatible task semantics.
-- [ ] Account for the fixed 15-second application shutdown deadline.
-- [ ] Add circuit breaking/concurrency controls externally or implement them; they are not built in.
+- [ ] Account for the fixed 15-second HTTP application shutdown deadline and worker `drain_timeout_seconds`.
+- [ ] Size worker settings (`concurrency`, `batch_size`, `lease_duration_seconds`, `renewal_interval_seconds`) against database connection pool limits.
+- [ ] Add per-agent circuit breaking and bulkheads externally or implement them; worker-wide concurrency is bounded, but per-agent isolation is not built in.
 - [ ] Load-test with realistic payloads and real upstream latency.
 
 ## State and scaling
@@ -33,6 +34,10 @@ ProGoA2A has solid foundations, but the current repository is an early-stage gat
     - [ ] Establish automated backup, WAL archiving, and disaster recovery procedures.
     - [ ] Understand failure semantics: upstream success followed by storage failure returns HTTP 503 `TASK_STORAGE_UNAVAILABLE`; do not blindly retry non-idempotent downstream work.
     - [ ] Understand readiness behavior: `/readyz` probes database connectivity with a 2-second timeout and fails (503) if unreachable.
+- [ ] If deploying `worker` or `all` roles:
+    - [ ] Enforce `storage.backend: postgres` (worker execution requires PostgreSQL).
+    - [ ] Ensure downstream agent tasks are idempotent when `max_attempts > 1` (delivery semantics are at-least-once).
+    - [ ] Size worker concurrency and pool size so database connections are not exhausted.
 - [ ] Scrape every replica; metrics are process-local.
 - [ ] Remember that `/readyz` checks registration/config presence and database connectivity (when PostgreSQL is used), but does not probe upstream agent health.
 

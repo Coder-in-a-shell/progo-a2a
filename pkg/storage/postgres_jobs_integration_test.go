@@ -931,3 +931,213 @@ func TestIntegration_Jobs_ErrorNonLeakage(t *testing.T) {
 		t.Fatalf("redacted error leaked raw DSN: %s", redacted.Error())
 	}
 }
+
+func TestIntegration_Jobs_AcknowledgeCancellation(t *testing.T) {
+	repo, prefix := setupJobsIntegrationTest(t)
+	ctx := context.Background()
+
+	t.Run("leased job cancellation acknowledged", func(t *testing.T) {
+		input := model.CreateJobInput{
+			ID:             prefix + "-ack-1",
+			TenantID:       prefix + "-tenant",
+			IdempotencyKey: prefix + "-key-1",
+			AgentID:        "agent",
+			MaxAttempts:    2,
+			Request:        "request",
+		}
+		if _, err := repo.CreateJob(ctx, input); err != nil {
+			t.Fatal(err)
+		}
+		job := mustAcquireOne(t, repo, "worker-1")
+
+		// Request cancellation while leased
+		if err := repo.CancelJob(ctx, input.TenantID, input.ID); err != nil {
+			t.Fatal(err)
+		}
+
+		// Acknowledge cancellation
+		if err := repo.AcknowledgeCancellation(ctx, job.Fence()); err != nil {
+			t.Fatalf("AcknowledgeCancellation failed: %v", err)
+		}
+
+		// Verify state is canceled and lease fields cleared
+		snap := mustGetJob(t, repo, input.TenantID, input.ID)
+		if snap.State != model.JobStateCanceled {
+			t.Fatalf("expected state canceled, got %s", snap.State)
+		}
+		if snap.LeaseOwner != nil {
+			t.Fatalf("expected nil LeaseOwner, got %v", *snap.LeaseOwner)
+		}
+		if snap.LeaseExpiresAt != nil {
+			t.Fatalf("expected nil LeaseExpiresAt, got %v", *snap.LeaseExpiresAt)
+		}
+
+		// Second acknowledgment returns ErrLeaseLost (already terminal canceled)
+		if err := repo.AcknowledgeCancellation(ctx, job.Fence()); !errors.Is(err, ErrLeaseLost) {
+			t.Fatalf("expected ErrLeaseLost for repeated ack, got %v", err)
+		}
+	})
+
+	t.Run("running job cancellation acknowledged", func(t *testing.T) {
+		input := model.CreateJobInput{
+			ID:             prefix + "-ack-2",
+			TenantID:       prefix + "-tenant",
+			IdempotencyKey: prefix + "-key-2",
+			AgentID:        "agent",
+			MaxAttempts:    2,
+			Request:        "request",
+		}
+		if _, err := repo.CreateJob(ctx, input); err != nil {
+			t.Fatal(err)
+		}
+		job := mustAcquireOne(t, repo, "worker-1")
+		if err := repo.MarkRunning(ctx, job.Fence()); err != nil {
+			t.Fatal(err)
+		}
+
+		// Request cancellation while running
+		if err := repo.CancelJob(ctx, input.TenantID, input.ID); err != nil {
+			t.Fatal(err)
+		}
+
+		// Acknowledge cancellation
+		if err := repo.AcknowledgeCancellation(ctx, job.Fence()); err != nil {
+			t.Fatalf("AcknowledgeCancellation failed: %v", err)
+		}
+
+		snap := mustGetJob(t, repo, input.TenantID, input.ID)
+		if snap.State != model.JobStateCanceled {
+			t.Fatalf("expected state canceled, got %s", snap.State)
+		}
+	})
+
+	t.Run("fence mismatch and not-requested rejection", func(t *testing.T) {
+		input := model.CreateJobInput{
+			ID:             prefix + "-ack-3",
+			TenantID:       prefix + "-tenant",
+			IdempotencyKey: prefix + "-key-3",
+			AgentID:        "agent",
+			MaxAttempts:    2,
+			Request:        "request",
+		}
+		if _, err := repo.CreateJob(ctx, input); err != nil {
+			t.Fatal(err)
+		}
+		job := mustAcquireOne(t, repo, "worker-1")
+
+		// Cancellation not requested yet: must return ErrLeaseLost
+		if err := repo.AcknowledgeCancellation(ctx, job.Fence()); !errors.Is(err, ErrLeaseLost) {
+			t.Fatalf("expected ErrLeaseLost when cancellation not requested, got %v", err)
+		}
+
+		// Now request cancellation
+		if err := repo.CancelJob(ctx, input.TenantID, input.ID); err != nil {
+			t.Fatal(err)
+		}
+
+		// Wrong token returns ErrLeaseLost
+		badFence := job.Fence()
+		badFence.LeaseToken = 99999
+		if err := repo.AcknowledgeCancellation(ctx, badFence); !errors.Is(err, ErrLeaseLost) {
+			t.Fatalf("expected ErrLeaseLost for bad token, got %v", err)
+		}
+
+		// Wrong owner returns ErrLeaseLost
+		badOwnerFence := job.Fence()
+		badOwnerFence.LeaseOwner = "impostor"
+		if err := repo.AcknowledgeCancellation(ctx, badOwnerFence); !errors.Is(err, ErrLeaseLost) {
+			t.Fatalf("expected ErrLeaseLost for bad owner, got %v", err)
+		}
+
+		// Non-existent job returns ErrJobNotFound
+		nonExistentFence := model.LeaseFence{
+			TenantID:   input.TenantID,
+			JobID:      "non-existent-job-id",
+			LeaseOwner: "worker-1",
+			LeaseToken: 1,
+		}
+		if err := repo.AcknowledgeCancellation(ctx, nonExistentFence); !errors.Is(err, ErrJobNotFound) {
+			t.Fatalf("expected ErrJobNotFound, got %v", err)
+		}
+	})
+}
+
+func TestIntegration_Jobs_TwoWorkerCrashAndReclamation(t *testing.T) {
+	repo, prefix := setupJobsIntegrationTest(t)
+	ctx := context.Background()
+
+	input := model.CreateJobInput{
+		ID:             prefix + "-crash-reclaim",
+		TenantID:       prefix + "-tenant",
+		IdempotencyKey: prefix + "-key-crash",
+		AgentID:        "agent",
+		MaxAttempts:    3,
+		Request:        "request",
+	}
+	if _, err := repo.CreateJob(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Worker 1 acquires and starts running the job
+	worker1Job := mustAcquireOne(t, repo, "worker-1")
+	if err := repo.MarkRunning(ctx, worker1Job.Fence()); err != nil {
+		t.Fatalf("worker-1 MarkRunning failed: %v", err)
+	}
+
+	// 2. Worker 1 crashes (simulated by expiring its lease in database)
+	_, err := repo.pool.Exec(ctx, "UPDATE durable_jobs SET lease_expires_at = NOW() - INTERVAL '5 seconds' WHERE id = $1", worker1Job.ID)
+	if err != nil {
+		t.Fatalf("failed to expire lease: %v", err)
+	}
+
+	// 3. Worker 2 reclaims expired leases
+	reclaimed, err := repo.ReclaimExpiredLeases(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ReclaimExpiredLeases failed: %v", err)
+	}
+	if reclaimed != 1 {
+		t.Fatalf("expected 1 reclaimed job, got %d", reclaimed)
+	}
+
+	// Verify job returned to queued state with incremented token
+	snap := mustGetJob(t, repo, input.TenantID, input.ID)
+	if snap.State != model.JobStateQueued {
+		t.Fatalf("expected state queued after reclamation, got %s", snap.State)
+	}
+	if snap.LeaseOwner != nil {
+		t.Fatalf("expected nil LeaseOwner after reclamation, got %v", *snap.LeaseOwner)
+	}
+	if snap.LeaseToken <= worker1Job.LeaseToken {
+		t.Fatalf("expected lease token > %d, got %d", worker1Job.LeaseToken, snap.LeaseToken)
+	}
+
+	// 4. Worker 2 acquires the job
+	worker2Job := mustAcquireOne(t, repo, "worker-2")
+	if worker2Job.Attempt != 2 {
+		t.Fatalf("expected attempt 2 for worker-2, got %d", worker2Job.Attempt)
+	}
+	if worker2Job.LeaseToken <= snap.LeaseToken {
+		t.Fatalf("expected lease token > %d, got %d", snap.LeaseToken, worker2Job.LeaseToken)
+	}
+
+	// 5. Stale Worker 1 wakes up and attempts mutation with old fence: must fail with ErrLeaseLost
+	if err := repo.CompleteJob(ctx, worker1Job.Fence(), "stale-worker-1-result"); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("expected ErrLeaseLost for stale worker-1 CompleteJob, got %v", err)
+	}
+	if err := repo.MarkRunning(ctx, worker1Job.Fence()); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("expected ErrLeaseLost for stale worker-1 MarkRunning, got %v", err)
+	}
+
+	// 6. Worker 2 marks running and completes the job successfully
+	if err := repo.MarkRunning(ctx, worker2Job.Fence()); err != nil {
+		t.Fatalf("worker-2 MarkRunning failed: %v", err)
+	}
+	if err := repo.CompleteJob(ctx, worker2Job.Fence(), map[string]string{"result": "worker-2-success"}); err != nil {
+		t.Fatalf("worker-2 CompleteJob failed: %v", err)
+	}
+
+	finalSnap := mustGetJob(t, repo, input.TenantID, input.ID)
+	if finalSnap.State != model.JobStateSucceeded {
+		t.Fatalf("expected state succeeded, got %s", finalSnap.State)
+	}
+}

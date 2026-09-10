@@ -178,6 +178,9 @@ func TestPostgresJobRepository_CloseIdempotent(t *testing.T) {
 	if err := repo.CancelJob(ctx, "t", "j"); !errors.Is(err, ErrStoreClosed) {
 		t.Fatalf("expected ErrStoreClosed on CancelJob, got: %v", err)
 	}
+	if err := repo.AcknowledgeCancellation(ctx, fence); !errors.Is(err, ErrStoreClosed) {
+		t.Fatalf("expected ErrStoreClosed on AcknowledgeCancellation, got: %v", err)
+	}
 	if _, err := repo.ReclaimExpiredLeases(ctx, 10, time.Second); !errors.Is(err, ErrStoreClosed) {
 		t.Fatalf("expected ErrStoreClosed on ReclaimExpiredLeases, got: %v", err)
 	}
@@ -291,6 +294,20 @@ func TestPostgresJobRepository_ValidationSentinels(t *testing.T) {
 	}
 	if err := repo.CancelJob(ctx, "t", ""); !errors.Is(err, ErrEmptyJobID) {
 		t.Fatalf("expected ErrEmptyJobID, got: %v", err)
+	}
+
+	// 5. AcknowledgeCancellation invalid fence
+	if err := repo.AcknowledgeCancellation(ctx, model.LeaseFence{}); !errors.Is(err, ErrEmptyTenantID) {
+		t.Fatalf("expected ErrEmptyTenantID, got: %v", err)
+	}
+	if err := repo.AcknowledgeCancellation(ctx, model.LeaseFence{TenantID: "t", JobID: ""}); !errors.Is(err, ErrEmptyJobID) {
+		t.Fatalf("expected ErrEmptyJobID, got: %v", err)
+	}
+	if err := repo.AcknowledgeCancellation(ctx, model.LeaseFence{TenantID: "t", JobID: "j", LeaseOwner: ""}); !errors.Is(err, ErrEmptyLeaseOwner) {
+		t.Fatalf("expected ErrEmptyLeaseOwner, got: %v", err)
+	}
+	if err := repo.AcknowledgeCancellation(ctx, model.LeaseFence{TenantID: "t", JobID: "j", LeaseOwner: "o", LeaseToken: 0}); !errors.Is(err, ErrInvalidLeaseToken) {
+		t.Fatalf("expected ErrInvalidLeaseToken, got: %v", err)
 	}
 }
 

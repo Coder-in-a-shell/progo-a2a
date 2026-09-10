@@ -25,10 +25,11 @@ ProGoA2A provides pluggable task storage with two backends: the default in-memor
 
 Be precise about what PostgreSQL storage does and does not do:
 
-- **Durable lookup**: PostgreSQL makes completed synchronous task responses durable and queryable across all proxy replicas.
-- **No asynchronous background jobs**: Task submission (`POST /a2a/v1/tasks`) remains synchronous and blocks until the downstream agent responds. ProGoA2A does not provide an asynchronous background task queue or worker pool.
+- **Durable lookup & background jobs**: PostgreSQL provides durable storage for completed synchronous task responses (`task_results`) as well as a durable ledger (`durable_jobs`) for background worker execution with at-least-once delivery semantics.
+- **Worker runtime**: When running in `worker` or `all` roles, background workers consume and process durable jobs using distributed leasing, scheduled renewal, and optimistic fencing. Public async HTTP endpoints for submitting durable jobs are planned for a subsequent release.
+- **Cancellation boundary**: The repository and worker support fenced cancellation acknowledgement internally. A public HTTP cancellation endpoint is not available in this release.
 - **No streaming event persistence**: Events streamed over Server-Sent Events (`/tasks/stream` or `/api/v1/stream/{agent_id}`) are delivered directly to the connected client and are **not** persisted to the database.
-- **No cancellation**: The storage layer does not add task cancellation mechanisms.
+- **At-least-once delivery**: The worker runtime provides at-least-once execution; jobs may be reclaimed and retried after lease expiration, so downstream operations must be idempotent when retries are enabled.
 - **No automatic retention**: The database schema does not automatically expire or prune historical task results.
 - **Not official A2A 1.0**: The storage model persists ProGoA2A's internal task response structure; it does not implement the official A2A JSON-RPC specification. See the [A2A protocol scope](../concepts/a2a-protocol.md) for precise boundaries.
 
